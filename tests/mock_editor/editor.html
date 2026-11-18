@@ -1,0 +1,258 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+.se-component{border:1px solid #ccc;margin:4px;padding:4px;min-height:20px}
+.se-section{padding:12px 60px}
+.se-image{min-height:60px;background:#eef}
+.se-image img{height:50px}
+.se-quotation{background:#ffe}
+.se-horizontalLine .se-section{height:4px;background:#333}
+.se-popup-placesMap{display:none;border:2px solid #000;padding:8px}
+.se-popup-placesMap.show{display:block}
+.se-popup{border:2px solid red;padding:8px}
+.se-toast-popup{position:fixed;top:10px;right:10px;background:#333;color:#fff;padding:6px}
+.se-text-paragraph-align-center{text-align:center}
+.tb-layer{display:none}
+.se-popup-dim{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1000;display:flex;align-items:center;justify-content:center}
+.tb-layer.open{display:inline-block}
+</style></head>
+<body>
+<!-- 가짜 SmartEditor ONE: 실제 에디터에서 확인한 동작을 단순화해 재현한 테스트용 페이지 -->
+<header class="header__abc">
+  <button class="save_btn__bzc5B" onclick="doSave()">저장</button>
+  <button class="save_count_btn__k3">0</button>
+  <button class="publish_btn__m9KHH" data-testid="seOnePublishBtn" onclick="window.__publishClicked = true">발행</button>
+</header>
+<div class="se-toolbar">
+  <button class="se-image-toolbar-button" onclick="document.getElementById('hidden-file').click()">사진</button>
+  <button class="tb_quote__x1" onclick="insertQuote()">인용구</button>
+  <button class="se-document-toolbar-select-option-button se-text-icon-toolbar-select-option-button" data-name="quotation" onclick="toggleLayer('quoteLayer')">인용구 선택</button>
+  <span class="tb-layer" id="quoteLayer">
+    <button class="se-toolbar-option-insert-quotation-default-button" data-name="quotation" data-value="default" onclick="insertQuote('default')">인용구 1</button>
+    <button class="se-toolbar-option-insert-quotation-quotation_line-button" data-name="quotation" data-value="quotation_line" onclick="insertQuote('quotation_line')">인용구 2</button>
+    <button class="se-toolbar-option-insert-quotation-quotation_underline-button" data-name="quotation" data-value="quotation_underline" onclick="insertQuote('quotation_underline')">인용구 4</button>
+    <button class="se-toolbar-option-insert-quotation-quotation_bubble-button" data-name="quotation" data-value="quotation_bubble" onclick="insertQuote('quotation_bubble')">인용구 3</button>
+  </span>
+  <button class="se-property-toolbar-drop-down-button se-align-left-toolbar-button" data-name="align-drop-down-with-justify" onclick="toggleLayer('alignLayer')">정렬</button>
+  <span class="tb-layer" id="alignLayer">
+    <button class="se-toolbar-option-align-left-button" data-name="align-drop-down-with-justify" data-value="left" onclick="setAlign('left')">왼쪽 정렬</button>
+    <button class="se-toolbar-option-align-center-button" data-name="align-drop-down-with-justify" data-value="center" onclick="setAlign('center')">가운데 정렬</button>
+  </span>
+  <button class="se-insert-horizontal-line-default-toolbar-button" onclick="insertDivider()">구분선</button>
+  <button class="tb_map__x2" onclick="openPlace()">장소</button>
+  <input type="file" id="hidden-file" accept="image/*" style="display:none">
+</div>
+<div class="se-components-wrap" id="wrap">
+  <div class="se-component se-documentTitle"><p class="se-text-paragraph" contenteditable="true"></p></div>
+  <div class="se-component se-text"><p class="se-text-paragraph" contenteditable="true"></p></div>
+</div>
+
+<!-- 함정: 실제 화면에도 있는 '글감 검색' 입력칸과 팝업 밖의 '추가' 버튼 -->
+<div class="library"><button class="material-add" onclick="window.__wrongAdd = true">추가</button></div>
+<div class="se-flayer"><input type="text" class="se-flayer-unified-search-input" placeholder="글감을 검색해 보세요."></div>
+
+<!-- 장소 팝업: Enter로는 검색되지 않고 '검색' 버튼으로만 검색. Esc로 닫히지 않음 -->
+<div class="se-popup-placesMap" id="placeLayer">
+  <ul class="se-popup-select-option-list">
+    <li class="se-popup-select-option-item se-map-place-item"><label>국내</label></li>
+    <li class="se-popup-select-option-item se-map-place-item"><label>해외</label></li>
+  </ul>
+  <input class="react-autosuggest__input" id="placeInput" placeholder="장소명을 입력하세요.">
+  <button class="se-place-search-button" onclick="searchPlace()">검색</button>
+  <div class="se-place-map-search-result">
+    <p class="se-place-map-search-info-description-before-search" id="placeBefore">원하시는 장소를 검색하거나 지도를 클릭해 직접 장소를 표시해보세요.</p>
+    <p class="se-place-map-search-no-result" id="placeNone" style="display:none">검색 결과가 없습니다.</p>
+    <ul class="se-place-map-search-result-list" id="placeResults"></ul></div>
+  <button class="se-popup-button se-popup-button-confirm" onclick="confirmPlace()">확인</button>
+  <button class="se-popup-close-button" onclick="closePlace()">팝업 닫기</button>
+</div>
+<script>
+let current = null;
+let images = 0;
+let saveCount = 0;
+const wrap = document.getElementById('wrap');
+document.addEventListener('focusin', e => { const c = e.target.closest('#wrap .se-component'); if (c) current = c; });
+function ref() { return current && current.parentElement === wrap ? current : wrap.lastElementChild; }
+function mkP() { const p = document.createElement('p'); p.className = 'se-text-paragraph'; p.contentEditable = 'true'; return p; }
+function newText() { const d = document.createElement('div'); d.className = 'se-component se-text'; d.appendChild(mkP()); return d; }
+// 텍스트: 줄마다 문단 요소가 따로 있음. Enter는 아래에 새 문단, ArrowUp은 윗 문단으로 이동(실제 에디터 구조).
+// 이모지(4바이트 문자)가 섞인 글자를 한 번에 넣으면 이모지만 남고 나머지가 사라짐(실제 에디터에서 확인한 동작).
+document.addEventListener('beforeinput', e => {
+  const d = e.data || '';
+  if (e.inputType === 'insertText' && /[^\uFE0F\s\u{10000}-\u{10FFFF}]\uFE0F/u.test(d)) {   // 변형 선택자가 붙은 2바이트 기호(✔️):
+    e.preventDefault(); window.__vs16Broken = true; return;                             // 넣으면 이후 입력이 사라짐(실제 에디터에서 확인)
+  }
+  if (window.__vs16Broken) { e.preventDefault(); return; }
+  const m = d.match(/[\u{10000}-\u{10FFFF}]/u);
+  if (e.inputType === 'insertText' && m && d !== m[0] && d.replace(/\uFE0F|\u200D/g, '') !== m[0]) {
+    e.preventDefault(); document.execCommand('insertText', false, m[0]);
+  }
+}, true);
+let lastP = null;
+document.addEventListener('focusin', e => { const p = e.target.closest && e.target.closest('#wrap .se-text .se-text-paragraph'); if (p) lastP = p; });
+document.addEventListener('keydown', e => {
+  const p = e.target.closest && e.target.closest('#wrap .se-text .se-text-paragraph');
+  if (!p) return;
+  if (e.key === 'Enter') {                      // 새 문단은 윗 문단의 정렬을 이어받음(실제 에디터에서 확인)
+    e.preventDefault(); const np = mkP(); const a = p.className.match(/se-text-paragraph-align-\w+/);
+    if (a) np.classList.add(a[0]); p.after(np); np.focus();
+  }
+  else if (e.key === 'ArrowUp' && p.previousElementSibling) { e.preventDefault(); p.previousElementSibling.focus(); }
+});
+function block(cls, inner) {
+  const d = document.createElement('div'); d.className = 'se-component ' + cls; d.tabIndex = 0;
+  d.innerHTML = '<div class="se-section">' + (inner || '') + '</div>';
+  const base = ref();
+  const split = window.__slotReady && base.classList.contains('se-text') && lastP && base.contains(lastP);
+  base.after(d);
+  if (split) {                                   // 커서 아래 줄들을 새 텍스트 블록으로 나눔
+    const t = document.createElement('div'); t.className = 'se-component se-text';
+    let n = lastP.nextElementSibling;
+    while (n) { const nx = n.nextElementSibling; t.appendChild(n); n = nx; }
+    if (!t.firstChild) t.appendChild(mkP());
+    d.after(t);
+  }
+  window.__slotReady = false; current = d; return d;
+}
+
+// 텍스트 문단에서 Enter 다음 ArrowUp으로 아래에 빈 문단을 남겨 두고 블록을 넣으면, 텍스트 블록이 나뉘어 블록 아래에 빈 문단이 생김.
+// 이렇게 준비하지 않고 넣으면 블록 아래에 문단이 없고, 인용구 안에서는 빠져나갈 방법이 없음(실제 에디터에서 확인한 동작).
+let lastKey = null;
+document.addEventListener('keydown', e => {
+  if (!(e.target.closest && e.target.closest('#wrap .se-text'))) return;
+  if (e.key === 'ArrowUp' && lastKey === 'Enter') window.__slotReady = true;
+  else if (e.key !== 'ArrowUp') window.__slotReady = false;
+  lastKey = e.key;
+}, true);
+
+// 사진: 사진을 누른 뒤 아래 방향키를 누르면 아래 문단으로 이동 (실제 에디터에서 확인한 동작)
+function imageArrow(d) {
+  d.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowDown') return;
+    ev.preventDefault();
+    let n = d.nextElementSibling;
+    if (!n || !n.classList.contains('se-text')) { n = newText(); d.after(n); }
+    n.querySelector('p').focus();
+  });
+}
+
+// 툴바 메뉴: 정렬은 지금 커서가 있던 문단에 적용하고 커서를 그 문단으로 돌려 놓음
+function toggleLayer(id) { document.getElementById(id).classList.toggle('open'); }
+function setAlign(a) {
+  document.getElementById('alignLayer').classList.remove('open');
+  if (!lastP) return;
+  lastP.className = lastP.className.replace(/\s*se-text-paragraph-align-\w+/g, '') + ' se-text-paragraph-align-' + a;
+  window.__alignSet = (window.__alignSet || 0) + 1;
+  const r = document.createRange(); r.selectNodeContents(lastP); r.collapse(false);
+  lastP.focus(); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+}
+// 인용구: 글자 안에서 ArrowDown은 아무 일도 안 함. 글자 안에서 Enter는 소제목을 두 줄로 쪼갬(기본 동작).
+// 인용구 버튼은 기본 모양, 옆의 '인용구 선택' 메뉴로 모양(se-l-quotation_line 등)을 고름
+function insertQuote(style) {
+  document.getElementById('quoteLayer').classList.remove('open');
+  const q = block('se-quotation se-l-' + (style || 'default'), '<div class="se-quotation-container"><div class="se-module se-module-text se-quote">'
+    + '<p class="se-text-paragraph" contenteditable="true"></p></div></div>'
+    + '<div class="se-cite"><p class="se-text-paragraph" contenteditable="true"><span class="se-placeholder">출처 입력</span></p></div>');
+  // 인용구 안의 Enter는 같은 인용구 안에 새 줄을 만듦(말풍선, 포스트잇, 프레임에서 실제 에디터로 확인)
+  q.querySelector('.se-quote').addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowDown') ev.preventDefault();
+    if (ev.key === 'Enter') { ev.preventDefault(); const np = mkP(); ev.target.closest('p').after(np); np.focus(); }
+  });
+  q.querySelector('.se-quote p').focus();
+}
+function insertDivider() { block('se-horizontalLine'); }
+
+// 장소
+let searchClicks = 0;
+function openPlace() {
+  document.getElementById('placeLayer').classList.add('show'); document.getElementById('placeResults').innerHTML = '';
+  document.getElementById('placeBefore').style.display = ''; document.getElementById('placeNone').style.display = 'none';
+  window.__placePicked = null;
+}
+function closePlace() { document.getElementById('placeLayer').classList.remove('show'); document.getElementById('placeInput').value = ''; }
+// 실제 에디터처럼 '검색' 클릭이 가끔 무시됨: 첫 번째 클릭은 아무 일도 하지 않음('검색 전' 안내문 유지).
+// '○○동'이 붙은 검색어는 결과 0건(에디터 검색이 지도 검색과 다르게 동작하는 경우를 재현).
+function searchPlace() {
+  searchClicks++; if (searchClicks === 1) return;
+  const q = document.getElementById('placeInput').value;
+  const ul = document.getElementById('placeResults'); ul.innerHTML = '';
+  document.getElementById('placeBefore').style.display = 'none';
+  if (q.includes('없는장소') || /동$/.test(q.trim())) { document.getElementById('placeNone').style.display = ''; return; }
+  document.getElementById('placeNone').style.display = 'none';
+  // 여러 단어 검색어(예: '카페어니언 일산')는 다른 지점만 나오고, 상호명만 검색해야 주소가 맞는 지점이 나옴(체인점 상황 재현).
+  const name = q.trim();
+  const rows = name.includes(' ')
+    ? [[name + ' 본점', '서울특별시 강남구 테헤란로 1'], [name + ' 2호점', '부산광역시 해운대구 대천로42번길 28-5']]
+    : [[name + ' 본점', '서울특별시 강남구 테헤란로 1'], [name, '경기도 고양시 일산서구 킨텍스로 255 상가234호'], [name + ' 2호점', '부산광역시 해운대구 대천로42번길 28-5']];
+  for (const [name, addr] of rows) {
+    const li = document.createElement('li'); li.className = 'se-place-map-search-result-item';
+    li.innerHTML = `<a href="#" class="se-place-map-search-result-link"><strong class="se-place-map-search-result-title">${name}</strong>`
+      + `<span class="se-place-map-search-result-address">${addr}</span></a><button type="button" class="se-place-add-button"><span>추가</span></button>`;
+    li.querySelector('button').onclick = () => {        // '추가'가 적용되면 표시가 붙고 '장소 삭제' 버튼이 생김
+      window.__placePicked = name + ' | ' + addr; window.__attachedAt = Date.now(); li.classList.add('se-is-attached');
+      const del = document.createElement('button'); del.className = 'se-place-attached-delete-button'; del.textContent = '장소 삭제';
+      document.getElementById('placeLayer').appendChild(del);
+    };
+    ul.appendChild(li);
+  }
+}
+function confirmPlace() {                       // '추가' 직후 너무 빨리 누른 '확인'은 무시됨(지도 미리보기 준비 전)
+  if (!window.__placePicked || Date.now() - window.__attachedAt < 700) return;
+  block('se-placesMap', '[지도] ' + window.__placePicked); closePlace();
+  document.querySelectorAll('.se-place-attached-delete-button').forEach(x => x.remove());
+}
+
+// 사진: 블록이 먼저 생기고(blob 주소, 로딩 표시, 진행 팝업) 잠시 뒤 실제 주소로 바뀌는 업로드를 재현
+document.getElementById('hidden-file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  setTimeout(() => {
+    const img = block('se-image', '<img src="' + URL.createObjectURL(f) + '"><span class="se-image-loading">업로드 중</span>'
+                      + '<div class="se-caption"><p class="se-text-paragraph" contenteditable="true"></p></div>');
+    imageArrow(img);
+    img.dataset.file = f.name; e.target.value = ''; images++;
+    const prog = document.createElement('div'); prog.className = 'se-popup se-popup-upload';
+    prog.innerHTML = '사진을 올리는 중입니다 <button class="se-popup-button se-popup-button-cancel">취소</button>';
+    prog.querySelector('button').onclick = () => { window.__uploadCanceled = true; prog.remove(); img.remove(); };
+    document.body.prepend(prog);
+    setTimeout(() => {
+      if (!img.isConnected) return;
+      img.querySelector('img').src = 'uploaded.svg?' + images;
+      img.querySelector('.se-image-loading').remove(); prog.remove();
+    }, 900);
+    if (images === 2) {                                // 글쓰기 중간에 팝업이 다시 뜨는 상황 재현
+      const p = document.createElement('div'); p.className = 'se-popup se-popup-alert-confirm';
+      p.innerHTML = '작성 중인 글이 있습니다. <button class="se-popup-button se-popup-button-cancel">취소</button>';
+      p.querySelector('button').onclick = () => { window.__midPopupClosed = true; p.remove(); };
+      document.body.prepend(p);
+    }
+  }, 300);
+});
+
+// '작성 중인 글이 있습니다' 창은 에디터가 보이고 잠시 뒤에 늦게 뜨며 화면 전체를 덮어 제목 칸 클릭을 막음(실제 에디터에서 확인)
+setTimeout(() => {
+  const p = document.createElement('div'); p.className = 'se-popup se-popup-alert-confirm se-popup-dim';
+  p.innerHTML = '<div>작성 중인 글이 있습니다. 이어서 작성하시겠습니까? <button class="se-popup-button se-popup-button-cancel">취소</button>'
+              + '<button class="se-popup-button se-popup-button-confirm">확인</button></div>';
+  p.querySelector('.se-popup-button-cancel').onclick = () => { window.__latePopupClosed = true; p.remove(); };
+  p.querySelector('.se-popup-button-confirm').onclick = () => { window.__latePopupResumed = true; p.remove(); };
+  document.body.appendChild(p);
+}, 1200);
+
+// 저장: 정상이면 잠시 뒤 알림과 저장 글 수 증가. __noSave면 아무 반응 없음(저장 실패 재현)
+function doSave() {
+  if (window.__noSave) return;
+  setTimeout(() => {
+    window.__saved = snapshot(); saveCount++;
+    document.querySelector('.save_count_btn__k3').textContent = String(saveCount);
+    const t = document.createElement('div'); t.className = 'se-toast-popup'; t.textContent = '임시저장 되었습니다.';
+    document.body.appendChild(t); setTimeout(() => t.remove(), 1500);
+  }, 500);
+}
+function snapshot() {
+  return [...wrap.querySelectorAll(':scope > .se-component')].map(c =>
+    c.classList.contains('se-image') ? {img: c.dataset.file, src: c.querySelector('img').getAttribute('src'), caption: c.querySelector('.se-caption').innerText.trim()}
+    : c.classList.contains('se-quotation') ? {cls: c.className.replace('se-component ', ''), text: [...c.querySelectorAll('.se-quote p')].map(p => p.innerText).join('\n')}
+    : {cls: c.className.replace('se-component ', ''), text: c.innerText.trim(),
+       paras: [...c.querySelectorAll('.se-text-paragraph')].map(p => ({align: (p.className.match(/align-(\w+)/) || [, 'left'])[1], html: p.innerHTML}))});
+}
+</script>
+</body></html>

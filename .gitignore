@@ -221,3 +221,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# NAVERBLOG-MCP
+
+# uv 가상환경은 위 템플릿의 .venv 항목으로 제외됨
+# 개인 설정과 비밀값
+.env.*
+claude_desktop_config.json
+
+# NBW_HOME을 레포 안으로 지정했을 때를 대비 (로그인 쿠키, 내 글, 다른 사람 글 캐시 보호)
+.naver-blog-writer/
+browser-profile/
+post_history.json
+errors/
+cache/
+/archive/
+/my_posts/
+/my_style.md
+/place_reviews/
+/trends/
+/research/
+server.log
+
+# OS, 편집기, Claude Code 개인 설정과 메모
+.DS_Store
+.vscode/
+.idea/
+.claude/settings.local.json
+CLAUDE.local.md
