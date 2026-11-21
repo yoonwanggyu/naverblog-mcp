@@ -89,6 +89,12 @@ w = lint(human + closing + [lead, LINK], title=GOOD_TITLE)
 check("마무리 상자 뒤 안내 한 줄 + 내 글 링크는 경고 없음", not any(k in " ".join(w) for k in ("마무리 상자", "링크")), str(w))
 check("내 글 링크 3개 이상 경고", has(lint(human + closing + [lead, LINK, LINK, LINK], title=GOOD_TITLE), "내 글 링크가 3개"))
 check("링크 앞 안내 한 줄 없으면 경고", has(lint(human + closing + [LINK], title=GOOD_TITLE), "안내 한 줄"))
+plain = img + fill + [{"type": "text", "text": "\n".join(f"{i}번째 이야기를 적은 줄이에요" for i in range(16))}] + closing
+check("긴 글에 이모지가 적으면 경고", has(lint(plain, title=GOOD_TITLE), "이모지가"))
+rich = img + fill + [{"type": "text", "text": "\n".join(f"{i}번째 이야기를 적은 줄이에요 😊" for i in range(16))}] + closing
+check("이모지를 충분히 쓰면 이모지 경고 없음", not has(lint(rich, title=GOOD_TITLE), "이모지가"))
+check("한 줄에 이모지 3개 이상 경고", has(lint(img + fill + [{"type": "text", "text": "너무 좋았어요 😊😋✨"}] + closing, title=GOOD_TITLE), "몰린 줄"))
+check("변형 선택자 기호(❤️) 경고", has(lint(img + fill + [{"type": "text", "text": "오늘도 행복 ❤️"}] + closing, title=GOOD_TITLE), "흑백 글자"))
 c = f.count_placeholders("제목", human + [{"type": "text", "text": "가격 [[확인필요: 가격]]"}])
 check("채울 자리 개수(직접 입력, 추천 문구 줄, 확인필요)", c == {"직접_입력": 1, "추천_문구_줄": 2, "확인필요": 1}, str(c))
 

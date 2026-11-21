@@ -157,6 +157,7 @@ async def refresh(page: Page, topic: str, force: bool = False) -> dict[str, Any]
             continue
         a.pop("body_lines", None)       # 본문은 저장하지 않습니다
         a.pop("info_lines", None)
+        a.pop("feeling_lines", None)
         stats.append(a)
         kinds[it["kind"]] = kinds.get(it["kind"], 0) + 1   # 글 주소(다른 블로거 ID)는 저장하지 않습니다
     if not stats:

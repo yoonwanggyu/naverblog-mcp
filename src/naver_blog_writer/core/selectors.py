@@ -43,6 +43,18 @@ IMAGE_COMPONENT = ".se-component.se-image, .se-component.se-imageStrip, .se-comp
 QUOTE_COMPONENT = ".se-component.se-quotation"
 DIVIDER_COMPONENT = ".se-component.se-horizontalLine"
 PLACE_COMPONENT = ".se-component.se-placesMap, .se-component.se-map"
+# 동영상: '동영상' 버튼 → '동영상 업로더' 창 → '동영상 추가'(파일 선택) → '업로드 완료' 문구 → 제목(필수, 40자) → '완료'
+# (실제 에디터에서 확인, 5초 영상 업로드 약 11초). 창 안의 요소는 모두 VIDEO_POPUP 안에서만 찾습니다.
+VIDEO_COMPONENT = ".se-component.se-video"
+VIDEO_BUTTON = ["button[data-name='video']", "button.se-video-toolbar-button"]
+VIDEO_BUTTON_NAMES = ["동영상"]
+VIDEO_POPUP = [".se-popup-video-upload"]
+VIDEO_LOCAL_BUTTON = ["button.nvu_local", "button.nvu_btn_local"]
+VIDEO_TITLE = ["#nvu_inp_box_title", "input.nvu_inp"]
+VIDEO_SUBMIT = ["button.nvu_btn_submit"]
+VIDEO_CLOSE = ["button.nvu_btn_close"]
+VIDEO_DONE_TEXT = "업로드 완료"
+VIDEO_FAIL_TEXT = r"업로드 실패|실패했습니다|지원하지 않는"
 # 링크 미리보기 카드. 툴바 '링크' 버튼은 눌러도 창이 뜨지 않고, 본문 줄에 주소를 입력하고 Enter를 누르면 카드가 생깁니다(실제 에디터에서 확인).
 OGLINK_COMPONENT = ".se-component.se-oglink"
 

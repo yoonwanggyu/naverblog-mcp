@@ -76,7 +76,8 @@ def other_post(title, lines, price):
 for bid, no, title, price in (("rv_old", "501", "일산 젠스시 오래된 후기", "런치 39,000원"),
                               ("rv_new", "502", "[일산 맛집] 젠스시｜런치 오마카세", "런치 오마카세 : 45,000원"),
                               ("rv_mid", "503", "일산 젠스시 런치 후기", "런치는 45,000원")):
-    (site / f"other_{bid}_{no}.html").write_text(other_post(title, ["카운터 자리에서 셰프님이 한 점씩 쥐어 주셨어요", "주말 점심에 다녀왔어요"], price),
+    (site / f"other_{bid}_{no}.html").write_text(other_post(title, ["카운터 자리에서 셰프님이 한 점씩 쥐어 주셨어요", "주말 점심에 다녀왔어요",
+                                                                  "가지구이가 달달하니 정말 맛있었어요"], price),
                                                encoding="utf-8")
 # 주제별 인기글과 최신글 목록 (같은 블로그 두 번, 쇼핑 글은 빠져야 함)
 (site / "top.json").write_text(")]}',\n" + _json.dumps({"result": [
@@ -177,6 +178,11 @@ async def main():
     info = r["reviews"][0]["info_lines"]
     check("정보 줄만 남기고 감상 문장은 뺌", "주차 : 건물 지하 2시간 무료" in info and not any("소개해 드릴게요" in x for x in info), str(info))
     check("돌려주는 결과에 본문 문장 없음", "카운터 자리에서" not in _json.dumps(r, ensure_ascii=False))
+    check("다른 방문자 감상 줄과 장점 집계(추천 문구 재료)", any("가지구이가 달달" in x["line"] for x in r["feeling_samples"])
+          and r["impressions"]["장점"].get("맛") == 3, str(r["impressions"]))
+    check("최신 경향에는 감상 줄도 저장하지 않음", "가지구이" not in _json.dumps(trends.load("맛집"), ensure_ascii=False))
+    w2 = archive.overlap_warnings("새 제목입니다 전혀 다른", None, None, [], "내 본문입니다 완전히 새로운 이야기\n가지구이가 달달하니 정말 맛있었어요")
+    check("추천 문구가 다른 리뷰 문장과 거의 같으면 경고", any("다른 사람 리뷰와 거의 같은 문장" in x for x in w2), str(w2)[:80])
     w = archive.overlap_warnings("일산 젠스시 런치 오마카세 다녀온 날", "일산 젠스시", None, ["메뉴"],
                                  "주말에 다녀왔어요. 카운터 자리에서 셰프님이 한 점씩 쥐어 주셨어요. 끝.")
     check("같은 장소 리뷰와 거의 같은 문장 경고", any("다른 사람 리뷰와 거의 같은 문장" in x for x in w), str(w)[:120])

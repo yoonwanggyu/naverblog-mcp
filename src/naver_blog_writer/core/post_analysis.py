@@ -58,6 +58,18 @@ _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⭐❤✅✔]")
 # 정보 줄: 정보 낱말이 있고, 값의 형태(가격, 시각, 비율, '항목: 값', 요일 휴무 등)가 있는 줄만. 감상 문장은 담지 않습니다.
 _INFO_WORD = re.compile(r"원|영업|브레이크|휴무|라스트\s?오더|주차|예약|웨이팅|캐치테이블|런치|디너|코스|운영|시간")
 _OPINION = re.compile(r"정말|너무|진짜|완전|저렴|비싸|가성비|합리적|생각하면|다니|ㅎㅎ|ㅋㅋ|ㅠ|맛있|좋았|좋은|최고|추천|행복|만족")  # 감상이 섞인 줄
+# 감상 줄: 방문자가 느낀 점(장점, 아쉬움, 팁). 같은 장소 리뷰에서 추천 문구의 재료로만 씁니다(본문에 옮기지 않음).
+_FEELING = re.compile(r"맛있|맛나|좋았|좋아|좋더|추천|아쉬|부드럽|바삭|촉촉|쫄깃|깔끔|정갈|친절|넓|아늑|예쁘|예뻤|뷰|조용|최고|만족|편하|편했|"
+                      r"따뜻|감성|힐링|재방문|또 가|또 오|가성비|푸짐|신선|고소|담백|진하|짰|짜다|짜서|짭짤|달달|달아|달았|달지|불편|좁|시끄|"
+                      r"웨이팅|기다")
+_NOT_FEELING = re.compile(r"위치|출구|주소|\d+\s?층|도보|번지|로\s?\d+")   # 위치 설명 줄은 감상이 아님
+IMPRESSION_WORDS = {
+    "장점": {"맛": r"맛있|맛나|고소|담백|진하", "식감": r"부드럽|바삭|촉촉|쫄깃", "깔끔, 정갈": r"깔끔|정갈", "친절": r"친절",
+             "넓음, 편안": r"넓|아늑|편하|편했", "뷰, 분위기": r"뷰|예쁘|예뻤|감성|분위기|조용", "가성비, 양": r"가성비|푸짐|양이|넉넉",
+             "청결": r"깨끗|청결", "재방문 의사": r"재방문|또 가|또 오"},
+    "아쉬움": {"웨이팅, 대기": r"웨이팅|기다", "짠맛, 단맛": r"짰|짜다|짜서|달았|달아", "좁음, 불편": r"좁|불편", "소음": r"시끄",
+              "가격": r"비싸|비쌌", "주차": r"주차.{0,6}(어렵|힘들|불편)"},
+}
 _TIME_RANGE = re.compile(r"\d{1,2}\s?:\s?\d{2}\s?[~\-–]\s?\d{1,2}\s?:\s?\d{2}")   # 12:00~21:20 같은 시간대는 낱말 없이도 정보
 _INFO_VALUE = re.compile(r"\d[\d,.]*\s?(원|만\s?원)|\d{1,2}\s?:\s?\d{2}|\d+\s?%|^[^\s:]{1,8}\s?:|[월화수목금토일](요일)?\s?(정기\s?)?휴무|"
                          r"주차[도는이가]?\s?(가능|불가|지원|무료)|예약\s?(필수|제)|\d+\s?시간\s?(무료|지원)")
@@ -153,10 +165,13 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
     first = next((b.get("k") for b in blocks if not (b.get("k") == "text" and not any(_clean(p.get("t")) for p in b.get("paras") or []))), None)
     lens = [len(x) for x in lines]
     info = []
+    feelings = []
     for ln in lines:
         is_info = ((_INFO_WORD.search(ln) and _INFO_VALUE.search(ln)) or _TIME_RANGE.search(ln)) and not _OPINION.search(ln)
         if len(ln) <= 60 and is_info and ln not in info:
             info.append(ln)
+        elif 8 <= len(ln) <= 60 and _FEELING.search(ln) and not _NOT_FEELING.search(ln) and ln not in feelings:
+            feelings.append(ln)
     return {
         "title": _clean(data.get("title")),
         "title_features": title_features(_clean(data.get("title"))),
@@ -179,6 +194,7 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "tags": len(data.get("tags") or []),
         "topics": [name for name, pat in TOPICS.items() if re.search(pat, body)],
         "info_lines": info[:8],
+        "feeling_lines": feelings[:6],   # 감상 줄(60자 이하, 최대 6개): 추천 문구 재료
         "body_lines": lines,   # 겹침 검사용. Claude에게 돌려주는 요약에는 넣지 않습니다.
     }
 

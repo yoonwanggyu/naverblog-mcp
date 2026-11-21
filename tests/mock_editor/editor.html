@@ -39,6 +39,8 @@
   </span>
   <button class="se-insert-horizontal-line-default-toolbar-button" onclick="insertDivider()">구분선</button>
   <button class="tb_map__x2" onclick="openPlace()">장소</button>
+  <button class="se-video-toolbar-button" data-name="video" onclick="openVideo()">동영상</button>
+  <input type="file" id="video-file" accept="video/*" style="display:none">
   <input type="file" id="hidden-file" accept="image/*" style="display:none">
 </div>
 <div class="se-components-wrap" id="wrap">
@@ -50,6 +52,14 @@
 <div class="library"><button class="material-add" onclick="window.__wrongAdd = true">추가</button></div>
 <div class="se-flayer"><input type="text" class="se-flayer-unified-search-input" placeholder="글감을 검색해 보세요."></div>
 
+<!-- 동영상 업로더: '동영상 추가' → 파일 선택 → 잠시 뒤 '업로드 완료' → 제목(필수) → '완료'. 제목이 비면 '완료'는 무시됨 -->
+<div class="se-popup se-popup-video-upload" id="videoLayer" style="display:none">
+  <button class="nvu_btn_append nvu_local" onclick="document.getElementById('video-file').click()">동영상 추가</button>
+  <span id="videoState"></span>
+  <input class="nvu_inp" id="nvu_inp_box_title" placeholder="제목을 입력하세요. (최대 40자, 필수)">
+  <button class="nvu_btn_submit nvu_btn_type2" onclick="submitVideo()">완료</button>
+  <button class="nvu_btn_close" onclick="document.getElementById('videoLayer').style.display='none'">동영상업로더 닫기</button>
+</div>
 <!-- 장소 팝업: Enter로는 검색되지 않고 '검색' 버튼으로만 검색. Esc로 닫히지 않음 -->
 <div class="se-popup-placesMap" id="placeLayer">
   <ul class="se-popup-select-option-list">
@@ -247,6 +257,22 @@ setTimeout(() => {
   document.body.appendChild(p);
 }, 1200);
 
+// 동영상
+let videoFile = null;
+function openVideo() { const l = document.getElementById('videoLayer'); l.style.display = 'block'; document.getElementById('videoState').textContent = '';
+  document.getElementById('nvu_inp_box_title').value = ''; videoFile = null; }
+document.getElementById('video-file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return; e.target.value = '';
+  document.getElementById('videoState').textContent = '업로드 진행중';
+  setTimeout(() => { videoFile = f.name; document.getElementById('videoState').textContent = '업로드 완료'; }, 1200);
+});
+function submitVideo() {
+  const t = document.getElementById('nvu_inp_box_title').value.trim();
+  if (!videoFile || !t) return;
+  const v = block('se-video', '00:01 ' + t); v.dataset.file = videoFile;
+  document.getElementById('videoLayer').style.display = 'none';
+}
+
 // 저장: 정상이면 잠시 뒤 알림과 저장 글 수 증가. __noSave면 아무 반응 없음(저장 실패 재현)
 function doSave() {
   if (window.__noSave) return;
@@ -260,6 +286,7 @@ function doSave() {
 function snapshot() {
   return [...wrap.querySelectorAll(':scope > .se-component')].map(c =>
     c.classList.contains('se-oglink') ? {cls: 'se-oglink', text: c.innerText.trim()}
+    : c.classList.contains('se-video') ? {cls: 'se-video', video: c.dataset.file, text: c.innerText.trim()}
     : c.classList.contains('se-image') ? {img: c.dataset.file, src: c.querySelector('img').getAttribute('src'), caption: c.querySelector('.se-caption').innerText.trim()}
     : c.classList.contains('se-quotation') ? {cls: c.className.replace('se-component ', ''), text: [...c.querySelectorAll('.se-quote p')].map(p => p.innerText).join('\n')}
     : {cls: c.className.replace('se-component ', ''), text: c.innerText.trim(),

@@ -29,7 +29,7 @@ ANNOTATIONS = ToolAnnotations(
     openWorldHint=True,
 )
 
-NON_TEXT = {"subtitle", "quote", "divider", "image", "place"}
+NON_TEXT = {"subtitle", "quote", "divider", "image", "video", "place"}
 CLOSING_STYLES = ("quotation_bubble", "quotation_postit", "quotation_corner")
 TEXTLIKE = {"text", "fill"}
 _OWN_POST = re.compile(r"https?://(?:m\.)?blog\.naver\.com/(?:([A-Za-z0-9_-]+)/(\d+)|PostView\.naver\?[^ ]*?blogId=([A-Za-z0-9_-]+)[^ ]*?logNo=(\d+))")
@@ -40,17 +40,19 @@ OpeningType = Literal["인사형", "상황형", "질문형", "요약형", "감�
 class Block(BaseModel):
     """본문 블록. 위에서부터 순서대로 에디터에 들어갑니다."""
 
-    type: Literal["text", "fill", "subtitle", "quote", "divider", "image", "place", "link"] = Field(
+    type: Literal["text", "fill", "subtitle", "quote", "divider", "image", "video", "place", "link"] = Field(
         description="text: 글(한 줄 한 호흡, \\n으로 줄 나눔, 빈 줄로 묶음 구분), fill: 주관 평가 자리(직접 입력 문구 + 추천 문구), "
                     "subtitle: 소제목(인용구), quote: 마무리 상자(말풍선, 포스트잇, 프레임 인용구, 여러 줄), "
-                    "divider: 구분선, image: 사진, place: 장소 지도, link: 내 블로그 다른 글의 링크 카드(사용자가 요청할 때만)"
+                    "divider: 구분선, image: 사진, video: 동영상(폴더의 영상 파일 업로드), place: 장소 지도, link: 내 블로그 다른 글의 링크 카드(사용자가 요청할 때만)"
     )
     text: str | None = Field(default=None, description="text, subtitle, quote의 내용. 줄 안의 **글자**는 굵게 들어갑니다. quote는 \\n으로 2~4줄")
     topic: str | None = Field(default=None, description="fill: 사용자가 채울 내용(예: '가지튀김 맛', '총평'). 보고용")
     suggestions: list[str] | None = Field(default=None, description="fill: 추천 문구 2~3개. '(추천 문구)' 줄로 들어가 사용자가 고르거나 지웁니다")
     style: QuoteStyle | None = Field(default=None, description="subtitle의 인용구 모양(비우면 SUBTITLE_STYLE). "
                                                                "quote는 quotation_bubble(말풍선, 기본), quotation_postit(포스트잇), quotation_corner(프레임) 중 하나")
-    path: str | None = Field(default=None, description="image의 사진 절대경로 (scan_media 결과의 path)")
+    path: str | None = Field(default=None, description="image의 사진, video의 영상 절대경로 (scan_media 결과의 path)")
+    video_title: str | None = Field(default=None, description="video의 제목(최대 40자). 비우면 글 제목을 씁니다")
+    user_selected: bool = Field(default=False, description="video: 폴더에 영상이 여러 개일 때 사용자가 이 영상을 고른 뒤에만 true")
     caption: str | None = Field(default=None, description="image의 사진 설명 (선택). 전체 사진의 절반 정도에만")
     query: str | None = Field(default=None, description="place의 검색어. find_place 결과의 place_block.query")
     address: str | None = Field(default=None, description="place의 주소. find_place 결과의 place_block.address (같은 이름 지점 구분용)")
@@ -63,8 +65,8 @@ class Block(BaseModel):
             raise ValueError(f"{self.type} 블록에는 text가 필요합니다. 빈 블록은 만들지 않습니다.")
         if self.type == "fill" and self.suggestions and len(self.suggestions) > 4:
             raise ValueError("fill 블록의 추천 문구는 4개까지입니다.")
-        if self.type == "image" and not self.path:
-            raise ValueError("image 블록에는 path가 필요합니다.")
+        if self.type in ("image", "video") and not self.path:
+            raise ValueError(f"{self.type} 블록에는 path가 필요합니다.")
         if self.type == "place" and not (self.query and self.query.strip()):
             raise ValueError("place 블록에는 query가 필요합니다.")
         if self.type == "link":
@@ -77,12 +79,12 @@ class Block(BaseModel):
 
 
 def _photo_order_warnings(paths: list[Path]) -> list[str]:
-    """사진이 촬영 시각 순서인지 확인합니다(두 사람이 올린 사진을 섞어 시간순). 첫 사진(대표 사진)과 영상 장면은 빼고 봅니다."""
+    """사진과 영상이 촬영 시각 순서인지 확인합니다(두 사람이 올린 것을 섞어 시간순). 첫 사진(대표 사진)과 영상 장면은 빼고 봅니다."""
     timed = [(p, media.capture_time(p)[0]) for p in paths[1:] if config.CACHE_DIR not in p.parents]
     wrong = [f"{a.name} → {b.name}" for (a, ta), (b, tb) in zip(timed, timed[1:], strict=False) if tb < ta]
     if not wrong:
         return []
-    return [f"사진이 촬영 시각 순서가 아닌 곳 {len(wrong)}군데: {wrong[:3]}. scan_media의 order 순서대로 넣으세요"
+    return [f"사진이나 영상이 촬영 시각 순서가 아닌 곳 {len(wrong)}군데: {wrong[:3]}. scan_media의 order 순서대로 넣으세요"
             "(첫 사진인 대표 사진은 예외). 사용자가 다른 순서를 요청했으면 그대로 둡니다."]
 
 
@@ -164,7 +166,9 @@ async def write_post(
     - quote는 글 맨 끝 마무리 상자입니다(말풍선, 포스트잇, 프레임). 추천 상황 한 줄과 댓글, 공감, 이웃추가 같은 참여 문구를 2~4줄로 씁니다.
     - link는 사용자가 요청할 때만 마무리 상자 뒤에 1~2개 넣는 내 블로그 다른 글 카드입니다(my_post_links의 url). 바로 앞 text에
       "다른 주제도 궁금하시면" 같은 부드러운 한 줄을 둡니다. 주소 줄 아래에 지도처럼 미리보기 카드가 들어갑니다.
-    - 사진은 scan_media의 order(촬영 시각) 순서대로 넣습니다. 첫 사진(대표 사진)만 예외입니다.
+    - 사진과 영상은 scan_media의 order(촬영 시각) 순서대로 넣습니다. 첫 사진(대표 사진)만 예외입니다.
+    - video는 폴더의 영상 파일을 그대로 올립니다(위치 정보 제거). 폴더에 영상이 여러 개면 사용자에게 고르게 한 뒤
+      고른 영상만 user_selected=true로 넣습니다. 영상 업로드는 크기에 따라 시간이 걸립니다.
     - sponsored: 협찬이면 표기 문구를 넣습니다. 본문 첫 블록으로 통째로 들어갑니다.
     - tags: 8~12개. 본문 끝에 #태그로 들어갑니다.
     - main_keyword, hook_pattern(도입 유형): 최근 글과 겹치는지 비교하는 데 쓰고, 기록에도 남깁니다. 항상 채웁니다.
@@ -188,7 +192,7 @@ async def write_post(
         src = media.check_allowed(b.path or "")
         ext = src.suffix.lower()
         if ext in media.VIDEO_EXT:
-            raise ValueError(f"동영상은 직접 넣을 수 없습니다. extract_video_frames로 장면을 뽑아 이미지로 넣으세요: {src}")
+            raise ValueError(f"영상은 image가 아니라 video 블록으로 넣습니다(또는 extract_video_frames 장면을 image로): {src}")
         if ext not in media.IMAGE_EXT:
             raise ValueError(f"지원하지 않는 이미지 형식입니다: {src}")
         uploads[i] = src
@@ -196,9 +200,27 @@ async def write_post(
         raise ValueError(f"이미지가 {len(uploads)}장입니다. 최대 {config.MAX_IMAGES_PER_POST}장까지 허용합니다.")
     if len({str(p) for p in uploads.values()}) != len(uploads):
         raise ValueError("같은 사진이 두 번 이상 들어 있습니다. 사진 재사용은 유사문서 위험이 있습니다.")
-    order_warnings = await asyncio.to_thread(_photo_order_warnings, [uploads[i] for i in sorted(uploads)])
+    videos: dict[int, Path] = {}
+    for i, b in enumerate(blocks):
+        if b.type != "video":
+            continue
+        src = media.check_allowed(b.path or "")
+        if src.suffix.lower() not in media.VIDEO_EXT:
+            raise ValueError(f"video 블록에는 영상 파일만 넣습니다: {src}")
+        siblings = sorted(p.name for p in src.parent.iterdir() if p.suffix.lower() in media.VIDEO_EXT and not p.name.startswith("."))
+        if len(siblings) > 1 and not b.user_selected:
+            raise ValueError(
+                f"폴더에 영상이 {len(siblings)}개 있습니다: {siblings}. 어떤 영상을 글에 넣을지 사용자에게 먼저 물어보고, "
+                "사용자가 고른 영상만 user_selected=true로 넣으세요.")
+        videos[i] = src
+    if len({str(p) for p in videos.values()}) != len(videos):
+        raise ValueError("같은 영상이 두 번 이상 들어 있습니다.")
+    media_in_order = [(uploads.get(i) or videos[i]) for i in sorted(set(uploads) | set(videos))]
+    order_warnings = await asyncio.to_thread(_photo_order_warnings, media_in_order)
     for i, src in list(uploads.items()):
         uploads[i] = await asyncio.to_thread(media.prepare_for_upload, src)
+    for i, src in list(videos.items()):
+        videos[i] = await asyncio.to_thread(media.prepare_video_for_upload, src)
 
     # 텍스트 정리
     paragraphs: dict[int, list[list[str]]] = {
@@ -214,7 +236,9 @@ async def write_post(
         [ln for p in sponsor_paras for ln in p]
         + [formatting.visible(ln) for i, b in enumerate(blocks) if b.type == "text" for p in paragraphs[i] for ln in p]
     )
-    overlaps = archive.overlap_warnings(title, main_keyword, hook_pattern, subtitles, body_text)
+    # 추천 문구도 다른 사람 리뷰 문장을 그대로 옮기지 않았는지 겹침 검사에 넣습니다(저장 기록에는 본문만 남김).
+    suggestion_text = "\n".join(s for b in blocks if b.type == "fill" for s in (b.suggestions or []))
+    overlaps = archive.overlap_warnings(title, main_keyword, hook_pattern, subtitles, body_text + "\n" + suggestion_text)
 
     digest = _digest(title, blocks)
     plan = {
@@ -227,6 +251,7 @@ async def write_post(
              **({"text": b.text, "style": b.style or config.SUBTITLE_STYLE} if b.type == "subtitle" else {}),
              **({"lines": _quote_lines(b), "style": b.style or CLOSING_STYLES[0]} if b.type == "quote" else {}),
              **({"file": str(uploads[i]), "caption": b.caption} if b.type == "image" else {}),
+             **({"file": str(videos[i]), "video_title": (b.video_title or title)[:40]} if b.type == "video" else {}),
              **({"query": b.query, "address": b.address} if b.type == "place" else {}),
              **({"url": b.url} if b.type == "link" else {})}
             for i, b in enumerate(blocks)
@@ -257,7 +282,7 @@ async def write_post(
 
     notes: list[str] = list(place_notes)
     expected: list[str] = [title]
-    counts = {"image": 0, "subtitle": 0, "divider": 0, "place": 0, "link": 0}
+    counts = {"image": 0, "video": 0, "subtitle": 0, "divider": 0, "place": 0, "link": 0}
     layout: list[str] = []
     total = len(blocks) + 4
 
@@ -308,6 +333,10 @@ async def write_post(
                     counts["image"] += 1
                     if b.caption:
                         expected.append(b.caption)
+                elif b.type == "video":
+                    step = f"{idx + 1}번 블록(video, 업로드 중)"
+                    await editor.insert_video(frame, videos[idx], title=formatting.clean_line(b.video_title or title))
+                    counts["video"] += 1
                 elif b.type == "place":
                     try:
                         picked = await editor.insert_place(frame, b.query or "", address=b.address)

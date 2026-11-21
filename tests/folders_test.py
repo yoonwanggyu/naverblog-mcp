@@ -50,6 +50,15 @@ photo(both, "IMG_0002.JPG", original="2026:09:20 12:30:00", offset="+09:00", mod
 photo(both, "20260920_121500.jpg", original="2026:09:20 12:15:00", model="SM-S928N")
 photo(both, "PXL_A.jpg", original="2026:09:20 03:20:00", offset="+00:00", model="Pixel 9")    # UTC 03:20 = 한국 12:20
 photo(both, "KakaoTalk_20260920_124500123.jpg")                                                # EXIF 없음 -> 파일 이름 날짜
+# 아이폰 영상: creation_time은 업로드 때 바뀐 시각, 실제 촬영 시각은 com.apple.quicktime.creationdate (실제 파일에서 확인한 형태)
+import subprocess  # noqa: E402
+
+import imageio_ffmpeg  # noqa: E402
+
+subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=64x48:d=1",
+                "-metadata", "creation_time=2026-11-21T03:06:23Z", "-metadata", "com.apple.quicktime.creationdate=2026-09-20T12:10:00+0900",
+                "-metadata", "com.apple.quicktime.model=iPhone 14 Pro", "-movflags", "use_metadata_tags", "-y", str(both / "IMG_8737.MOV")],
+               check=True)
 
 os.environ["NBW_NO_DOTENV"] = "1"  # 테스트는 레포의 .env를 읽지 않습니다
 os.environ.update(MEDIA_ROOTS=str(root), NBW_HOME=str(tmp / "home"))
@@ -135,13 +144,17 @@ async def order():
     res = await scan_media(str(both), user_confirmed=True)
     names = [i["path"].rsplit("/", 1)[-1] for i in res["items"]]
     check("두 기기 사진을 촬영 시각순으로 섞음(시간대 보정 포함)",
-          names == ["IMG_0001.JPG", "20260920_121500.jpg", "PXL_A.jpg", "IMG_0002.JPG", "KakaoTalk_20260920_124500123.jpg"], str(names))
-    check("순서 번호와 시각 출처", [i["order"] for i in res["items"]] == [1, 2, 3, 4, 5]
+          names == ["IMG_0001.JPG", "IMG_8737.MOV", "20260920_121500.jpg", "PXL_A.jpg", "IMG_0002.JPG", "KakaoTalk_20260920_124500123.jpg"],
+          str(names))
+    check("아이폰 영상은 업로드 시각이 아닌 실제 촬영 시각으로", res["items"][1]["time_source"] == "video_meta"
+          and res["items"][1]["taken_at"] == "2026-09-20T12:10:00" and res["items"][1].get("camera") == "iPhone 14 Pro",
+          str({k: res["items"][1].get(k) for k in ("taken_at", "time_source", "camera")}))
+    check("순서 번호와 시각 출처", [i["order"] for i in res["items"]] == [1, 2, 3, 4, 5, 6]
           and res["items"][-1]["time_source"] == "file_name" and res["items"][0]["time_source"] == "exif",
           str([(i["order"], i["time_source"]) for i in res["items"]]))
     check("기기별 사진 수", res["devices"].get("iPhone 16") == 2 and res["devices"].get("SM-S928N") == 1, str(res["devices"]))
     from naver_blog_writer.tools.write_post import _photo_order_warnings
-    paths = [Path(i["path"]) for i in res["items"]]
+    paths = [Path(i["path"]) for i in res["items"] if i["kind"] == "image"]
     check("촬영 순서대로면 경고 없음", _photo_order_warnings(paths) == [])
     check("순서가 바뀌면 경고(첫 사진은 대표 사진이라 제외)",
           len(_photo_order_warnings([paths[0], paths[3], paths[1]])) == 1 and _photo_order_warnings([paths[3], paths[0], paths[1]]) == [])

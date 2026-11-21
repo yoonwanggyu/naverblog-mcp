@@ -30,6 +30,13 @@ media_dir = tmp / "media"
 media_dir.mkdir()
 for name, color in (("a.jpg", (40, 120, 200)), ("b.jpg", (200, 80, 40)), ("c.jpg", (20, 160, 60))):
     Image.new("RGB", (800, 600), color).save(media_dir / name)
+import subprocess  # noqa: E402
+
+import imageio_ffmpeg  # noqa: E402
+
+for vname in ("clip1.mp4", "clip2.mp4"):  # 폴더에 영상 2개: 사용자가 고른 영상만 넣을 수 있어야 함
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=64x48:d=1",
+                    "-metadata", "location=+37.5+127.0/", "-y", str(media_dir / vname)], check=True)
 
 os.environ["NBW_NO_DOTENV"] = "1"  # 테스트는 레포의 .env를 읽지 않습니다
 os.environ.update(MEDIA_ROOTS=str(media_dir), NAVER_BLOG_ID="testblog", NBW_HOME=str(tmp / "home"),
@@ -87,6 +94,7 @@ BLOCKS = [
     Block(type="text", text=f"2층은 창가 자리가 길게 이어져 있어요. {PLACEHOLDER}"),
     Block(type="fill", topic="팡도르 맛", suggestions=["겉은 바삭하고 속은 촉촉했어요", "둘이 나눠 먹기 딱 좋은 크기였어요"]),
     Block(type="image", path=str(media_dir / "b.jpg")),
+    Block(type="video", path=str(media_dir / "clip1.mp4"), video_title="성수 카페어니언 영상", user_selected=True),
     Block(type="place", query="카페어니언 성수동", address="킨텍스로 255 상가234호"),
     Block(type="place", query="없는장소"),
     Block(type="place", query="카페어니언 일산", address="킨텍스로 255 상가234호"),
@@ -157,7 +165,7 @@ async def main() -> int:
     doc = cap.get("doc") or []
     kinds = [d.get("cls", "img").split()[0] if "cls" in d else "img" for d in doc]
     seq = [k for k in kinds if k != "se-text"]
-    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
+    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-video", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
                             "se-quotation", "se-oglink"], str(kinds))
     texts_before_card = [d.get("text", "") for d in doc[:-1]]
     check("내 글 링크: 주소 줄 아래 카드, 그 아래 태그", kinds[-2:] == ["se-oglink", "se-text"]
@@ -235,6 +243,14 @@ async def main() -> int:
         check("다른 사람 블로그 링크는 거부", False, "통과해 버림")
     except ValueError:
         check("다른 사람 블로그 링크는 거부", True)
+    vids = [d for d in doc if d.get("cls") == "se-video"]
+    check("영상 업로드: 제목과 함께 영상 블록, 위치 정보 지운 사본", len(vids) == 1 and "성수 카페어니언 영상" in vids[0]["text"]
+          and vids[0]["video"].startswith("clip1_"), str(vids))
+    try:
+        await write_post(title=TITLE, blocks=[Block(type="video", path=str(media_dir / "clip2.mp4"))], dry_run=True)
+        check("영상이 여러 개면 사용자가 고르기 전에는 거부", False, "통과해 버림")
+    except ValueError as e:
+        check("영상이 여러 개면 사용자가 고르기 전에는 거부", "사용자에게 먼저 물어보고" in str(e), str(e)[:60])
     try:
         await write_post(title="네 번째 글 테스트 제목입니다", blocks=[Block(type="text", text="네 번째 글입니다.")], review_seconds=0)
         check("하루 한도 차단(미확인 저장 포함)", False)

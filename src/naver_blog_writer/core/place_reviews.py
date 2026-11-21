@@ -106,6 +106,19 @@ def _price_values(lines: list[str]) -> set[str]:
     return {m.group(1).replace(",", "") for ln in lines for m in _PRICE.finditer(ln)}
 
 
+def _impressions(reviews: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """감상 줄에서 자주 나온 장점과 아쉬움(몇 개 리뷰에서 나왔는지)."""
+    out: dict[str, dict[str, int]] = {}
+    for side, words in post_analysis.IMPRESSION_WORDS.items():
+        counts = {}
+        for name, pat in words.items():
+            n = sum(1 for r in reviews if any(re.search(pat, ln) for ln in r["analysis"].get("feeling_lines", [])))
+            if n:
+                counts[name] = n
+        out[side] = dict(sorted(counts.items(), key=lambda x: -x[1]))
+    return out
+
+
 def summarize(place_name: str, place_id: str, reviews: list[dict[str, Any]]) -> dict[str, Any]:
     """Claude에게 돌려줄 요약. 본문 문장은 넣지 않고 수치, 제목, 소제목, 정보 줄만 담습니다."""
     stats = [r["analysis"] for r in reviews]
@@ -129,11 +142,15 @@ def summarize(place_name: str, place_id: str, reviews: list[dict[str, Any]]) -> 
             "형식(분량, 사진 수, 소제목 수, 지도 위치)은 참고만 하고, 말투와 구성은 스타일 가이드와 내 스타일을 따른다.",
             "info_lines의 가격, 영업시간, 주차, 예약은 최근 6개월 안의 리뷰 2곳 이상이 같은 값일 때만 쓴다. 아니면 [[확인필요]].",
             "less_covered(다른 리뷰가 덜 다룬 내용)를 내 사진과 메모로 채울 수 있으면 그 부분을 더 자세히 써서 차별점을 만든다.",
+            "impressions와 feeling_samples(다른 방문자의 감상)는 fill 추천 문구의 재료로 적극 쓴다. 여러 리뷰가 말한 장점, 아쉬움, 팁을 "
+            "추천 문구 후보로 넣되 문장은 내 말로 바꾼다(3어절 이상 그대로 잇지 않음). 본문(text)에 다른 사람의 평가를 내 경험처럼 쓰지 않는다.",
         ],
         "format_summary": agg,
         "most_covered": [t for t, c in topics.items() if c >= max(2, n // 2)],
         "less_covered": less,
         "price_agreed_recent": agreed,
+        "impressions": _impressions(reviews),
+        "feeling_samples": [{"date": r["date"], "line": ln} for r in reviews for ln in r["analysis"].get("feeling_lines", [])][:15],
         "reviews": [{
             "date": r["date"], "title": r["title"], "url": r["url"],
             "chars": r["analysis"]["chars"], "images": r["analysis"]["images"], "lines": r["analysis"]["lines"],

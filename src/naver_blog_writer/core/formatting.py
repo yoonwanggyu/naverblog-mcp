@@ -17,7 +17,7 @@ import re
 import unicodedata
 
 _ZERO_WIDTH = re.compile(r"[​‌‍﻿]")
-_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⭐❤✅✔][️‍]*")
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u231A-\u23FF☀-➿⭐❤✅✔][️‍]*")
 # 정보 줄과 목록 줄: 체크 표시, 이모지 머리표, 목록 기호, 번호
 _LIST_LINE = re.compile(r"^(?:[✔✅☑•·\-–▶▪︎◾️●○]|[\U0001F4CC\U0001F4CD⏰\U0001F552\U0001F697\U0001F4DE\U0001F4B0\U0001F37D☕\U0001F68C\U0001F687]|\d{1,2}[.)])\s*")
 # 문장 끝: 마침표, 물음표, 느낌표 (뒤에 닫는 따옴표나 괄호, 이모지가 올 수 있음) 다음 공백
@@ -212,6 +212,16 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
             worst = (streak, e)
     if worst[0] >= 4:
         w.append(f"'~{worst[1]}'로 끝나는 줄이 {worst[0]}번 연달아 나옵니다. ~어요, ~더라고요, ~네요, ~죠, 명사로 끝내기처럼 섞으세요.")
+    # 이모지: 적극적으로 쓰되 한 줄에 몰리지 않게 (스타일 가이드 3-1절)
+    quote_lines = [ln for b in blocks if b.get("type") == "quote" for ln in (b.get("text") or "").split("\n")]
+    n_emoji = sum(len(_EMOJI.findall(ln)) for ln in body + quote_lines)
+    if len(body) >= 15 and n_emoji < 8:
+        w.append(f"이모지가 {n_emoji}개뿐입니다. 묶음마다 감정이나 장면 줄 끝에 하나씩, 글당 12~25개를 쓰세요(스타일 가이드 3-1절).")
+    crowded = [ln for ln in body if len(_EMOJI.findall(ln)) >= 3]
+    if crowded:
+        w.append(f"이모지가 3개 이상 몰린 줄 {len(crowded)}개: {[x[:20] for x in crowded[:2]]}. 한 줄에 2개까지 씁니다.")
+    if re.search("[\u2600-\u27BF\u2B50]\uFE0F", " ".join(body + quote_lines + [title])):
+        w.append("❤️ ☀️ ✔️ ⭐️처럼 변형 선택자가 붙는 기호는 흑백 글자로 들어갑니다. 🤍 💕 🔆 ✅ 🌟를 쓰세요.")
     exif = [ln for ln in body if EXIF_TIME.search(ln)]
     if exif:
         w.append(f"촬영 시각을 분 단위로 쓴 줄 {len(exif)}개: {[x[:20] for x in exif[:2]]}. '점심쯤', '오픈 직후'처럼 쓰거나 빼세요.")

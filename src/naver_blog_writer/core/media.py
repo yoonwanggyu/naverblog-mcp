@@ -144,15 +144,28 @@ def video_info(path: Path) -> tuple[float | None, str | None]:
         h, mi, sec = m.groups()
         dur = int(h) * 3600 + int(mi) * 60 + float(sec)
     created: str | None = None
-    m = re.search(r"creation_time\s*:\s*(\S+)", proc.stderr)
+    # 아이폰 영상의 실제 촬영 시각은 com.apple.quicktime.creationdate(시간대 포함)에 있습니다. creation_time은 Drive 업로드나
+    # 내보내기 때 바뀌는 경우가 많아(실제 파일: 촬영 2025-11-03, creation_time 2026-11-21) 그다음으로만 씁니다.
+    m = re.search(r"com\.apple\.quicktime\.creationdate\s*:\s*(\S+)", proc.stderr) or \
+        re.search(r"creation_time\s*:\s*(\S+)", proc.stderr)
     if m:
         raw = m.group(1)
-        try:  # 영상 메타데이터는 UTC라서 사진 EXIF와 같은 현지 시각으로 맞춥니다.
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            created = dt.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+        try:  # UTC나 시간대가 붙은 값을 사진 EXIF와 같은 현지 시각으로 맞춥니다.
+            raw2 = raw.replace("Z", "+00:00")
+            raw2 = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw2)  # +0900 -> +09:00
+            dt = datetime.fromisoformat(raw2)
+            created = (dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt).isoformat(timespec="seconds")
         except ValueError:
             created = raw
     return dur, created
+
+
+def video_model(path: Path) -> str | None:
+    """영상을 찍은 기기 이름(아이폰 영상의 com.apple.quicktime.model). 기기별 사진 수를 셀 때 씁니다."""
+    proc = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    m = re.search(r"com\.apple\.quicktime\.model\s*:\s*(.+)", proc.stderr) or re.search(r"\bmodel\s*:\s*(.+)", proc.stderr)
+    return m.group(1).strip() if m else None
 
 
 def video_duration(path: Path) -> float | None:
@@ -222,7 +235,17 @@ def capture_time(path: Path, meta: dict[str, Any] | None = None) -> tuple[str, s
     2) 파일 이름 속 날짜(메신저로 받아 EXIF가 지워진 사진, 스크린샷)
     3) 파일 수정 시각(마지막 수단)
     """
-    meta = meta if meta is not None else (read_exif(path) if path.suffix.lower() in IMAGE_EXT else {})
+    if meta is None:
+        if path.suffix.lower() in IMAGE_EXT:
+            meta = read_exif(path)
+        elif path.suffix.lower() in VIDEO_EXT:
+            try:
+                ct = video_info(path)[1]
+            except Exception:
+                ct = None
+            meta = {"taken_at": ct, "time_source": "video_meta"} if ct else {}
+        else:
+            meta = {}
     if meta.get("taken_at"):
         return meta["taken_at"], meta.get("time_source") or "exif"
     by_name = time_from_name(path.name)
@@ -247,6 +270,9 @@ def scan_folder(folder: Path, recursive: bool = False) -> list[dict[str, Any]]:
             item = {"path": str(p), "kind": "video", "size_kb": round(p.stat().st_size / 1024)}
             try:
                 d, ct = video_info(p)
+                model = video_model(p)
+                if model:
+                    item["camera"] = model
                 if d:
                     item["duration_sec"] = round(d, 1)
                 if ct:
@@ -320,6 +346,26 @@ def prepare_for_upload(path: Path) -> Path:
         im.thumbnail((4000, 4000))
         im.save(out, format="JPEG", quality=92)  # exif 인자를 주지 않으므로 GPS를 포함한 메타데이터가 빠집니다.
     log.info("업로드용 변환%s: %s -> %s", " (GPS 제거)" if strip else "", path, out)
+    return out
+
+
+def prepare_video_for_upload(path: Path) -> Path:
+    """영상의 위치 정보(com.apple.quicktime.location 등)를 지운 사본을 만듭니다. 다시 인코딩하지 않아 빠르고 화질이 같습니다.
+
+    STRIP_GPS=false면 원본을 그대로 씁니다. 영상과 소리 트랙만 남기고 메타데이터 트랙(아이폰 mebx)은 뺍니다.
+    """
+    if not config.STRIP_GPS:
+        return path
+    key = hashlib.sha1(f"{path}:{path.stat().st_mtime}".encode()).hexdigest()[:10]
+    out = config.CACHE_DIR / "upload" / f"{path.stem}_{key}{path.suffix.lower()}"
+    if out.exists():
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(path), "-map", "0:v", "-map", "0:a?",
+                           "-map_metadata", "-1", "-c", "copy", str(out)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0 or not out.exists():
+        raise RuntimeError(f"영상 위치 정보 제거 실패: {proc.stderr.strip()[:200]}")
+    log.info("업로드용 영상 (위치 정보 제거): %s -> %s", path, out)
     return out
 
 

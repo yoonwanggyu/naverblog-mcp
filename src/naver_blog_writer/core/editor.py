@@ -499,6 +499,56 @@ async def insert_quote(frame: Frame, lines: list[str], style: str = "quotation_b
         await type_line(frame, line)
 
 
+async def insert_video(frame: Frame, path: Path, title: str, timeout_s: float = 600) -> None:
+    """동영상 업로더로 영상을 올려 본문에 영상 블록을 넣습니다(실제 에디터에서 확인한 순서).
+
+    '동영상' 버튼 → '동영상 업로더' 창 → '동영상 추가'로 파일 선택 → '업로드 완료'가 뜰 때까지 대기 →
+    제목(필수, 최대 40자) 입력 → '완료'. 실패하면 창을 닫고 EditorError를 던집니다.
+    """
+    page = frame.page
+    before = await frame.locator(S.VIDEO_COMPONENT).count()
+    await _click_toolbar(frame, S.VIDEO_BUTTON, S.VIDEO_BUTTON_NAMES, "동영상")
+    popup = await first_visible(frame, S.VIDEO_POPUP, timeout_ms=6000)
+    if not popup:
+        raise EditorError("동영상 업로더 창이 열리지 않았습니다.")
+    try:
+        local = await first_visible(popup, S.VIDEO_LOCAL_BUTTON, timeout_ms=4000)
+        if not local:
+            raise EditorError("동영상 업로더의 '동영상 추가' 버튼을 찾지 못했습니다.")
+        async with page.expect_file_chooser(timeout=8000) as fc:
+            await safe_click(local)
+        await (await fc.value).set_files(str(path))
+        deadline = time.monotonic() + timeout_s
+        while True:
+            txt = await popup.inner_text()
+            if S.VIDEO_DONE_TEXT in txt:
+                break
+            if re.search(S.VIDEO_FAIL_TEXT, txt):
+                raise EditorError(f"동영상 업로드 실패: {path.name}")
+            if time.monotonic() > deadline:
+                raise EditorError(f"동영상 업로드가 {timeout_s:.0f}초 안에 끝나지 않았습니다: {path.name}")
+            await asyncio.sleep(1)
+        field = await first_visible(popup, S.VIDEO_TITLE, timeout_ms=4000)
+        if not field:
+            raise EditorError("동영상 제목 입력칸을 찾지 못했습니다.")
+        await safe_click(field)
+        await type_text(page, title[:40])
+        await asyncio.sleep(0.3)
+        submit = await first_visible(popup, S.VIDEO_SUBMIT, timeout_ms=3000)
+        if not submit:
+            raise EditorError("동영상 업로더의 '완료' 버튼을 찾지 못했습니다.")
+        await safe_click(submit)
+        await _wait_count_increase(frame, S.VIDEO_COMPONENT, before, 30, "동영상")
+    except Exception:
+        close = await first_visible(frame, S.VIDEO_CLOSE)
+        if close:
+            try:
+                await safe_click(close, timeout=2000)
+            except Exception:
+                pass
+        raise
+
+
 async def insert_link(frame: Frame, url: str, timeout_s: float = 10) -> bool:
     """지금 커서가 있는 빈 줄에 주소를 입력하고 Enter를 눌러 링크 미리보기 카드(대표 사진, 제목, 요약)를 만듭니다.
 
@@ -866,6 +916,8 @@ def _kind(cls: str, text: str) -> str | None:
         return "place"
     if "se-oglink" in k:
         return "link"
+    if "se-video" in k:
+        return "video"
     return "other"
 
 
@@ -908,6 +960,7 @@ async def verify_text(frame: Frame, expected: list[str], counts: dict[str, int],
         "divider": count("se-horizontalLine"),
         "place": count("se-placesMap") + count("se-map"),
         "link": count("se-oglink"),
+        "video": count("se-video"),
     }
     count_mismatch = {k: {"expected": v, "actual": actual.get(k, 0)} for k, v in counts.items() if actual.get(k, 0) != v}
     out: dict[str, Any] = {

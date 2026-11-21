@@ -14,6 +14,7 @@ async def scan_media(folder: str, recursive: bool = True, user_confirmed: bool =
 
     두 사람이 같은 폴더에 각자 사진을 올리므로 파일 이름이 아니라 촬영 시각으로 섞어 정렬합니다. 글에도 이 order 순서대로 넣습니다.
     time_source: exif(촬영 시각), video_meta(영상), file_name(파일 이름 속 날짜), file_modified(정확하지 않을 수 있음).
+    영상은 write_post의 video 블록으로 올립니다. video_question이 있으면(영상 2개 이상) 그대로 사용자에게 보여 주고 고른 영상만 씁니다.
 
     list_folders가 확인이 필요하다고 한 폴더는 사용자가 '맞다'고 답한 뒤 user_confirmed=true로만 읽을 수 있습니다.
     이미지를 인식하지는 않습니다. 내용은 view_images로 직접 봐야 합니다.
@@ -34,9 +35,18 @@ async def scan_media(folder: str, recursive: bool = True, user_confirmed: bool =
     guessed = sum(1 for i in items if i.get("time_source") == "file_modified")
     if guessed:
         out_note = f"{guessed}개는 촬영 시각 정보가 없어 파일 수정 시각으로 정렬했습니다. 순서가 어색하면 사용자에게 확인하세요."
+    vids = [i for i in items if i["kind"] == "video"]
+    video_question = None
+    if len(vids) > 1:
+        lines = [f"{n}) {v['path'].rsplit('/', 1)[-1]} · {round(v.get('duration_sec') or 0)}초 · {v['taken_at'][5:16].replace('T', ' ')} 촬영"
+                 for n, v in enumerate(vids, 1)]
+        video_question = (f"폴더에 영상이 {len(vids)}개 있습니다. 글에 넣을 영상을 골라 주세요(번호 여러 개, '전부', '넣지 않음' 가능).\n"
+                          + "\n".join(lines))
     return {
         "folder": str(p),
         "devices": devices,
+        "video_question": video_question,
+        "video_note": "영상 1개는 촬영 시각 자리에 video 블록으로 넣습니다." if len(vids) == 1 else None,
         "order_note": out_note,
         "images": sum(1 for i in items if i["kind"] == "image"),
         "videos": sum(1 for i in items if i["kind"] == "video"),

@@ -30,12 +30,14 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 검증은 텍스트 전문 대조 1회다. 스크린샷 검증과 자동 재시도를 넣지 않는다. 실패 스크린샷은 디스크에만 저장한다(`RETURN_ERROR_SCREENSHOT=true`일 때만 반환).
 - 블로그 읽기는 세 가지뿐이다. 모두 공개 글만, 화면에 보이는 브라우저로 천천히 읽는다.
   1. 내 블로그(`NAVER_BLOG_ID`) 최근 게시물 최대 5개, 글쓰기마다(`core/blog_reader.py`). `NBW_HOME/my_style.md`(10절)를 새로 쓰고 겹침 비교 대상으로 쓴다.
-  2. 같은 장소의 최신 블로그 리뷰 최대 `PLACE_REVIEWS_LIMIT`(10)편, 장소 글의 장소마다 반드시(`write_post`가 24시간 안의 읽은 기록이나 실패 기록이 없으면 거부)(`core/place_reviews.py`, 플레이스 '블로그 리뷰' 최신순). Claude에게는 수치, 제목, 소제목, 60자 이하 정보 줄만 보낸다. 본문 줄은 `NBW_HOME/place_reviews/`에만 두고 24시간 동안 겹침 검사에만 쓴다.
+  2. 같은 장소의 최신 블로그 리뷰 최대 `PLACE_REVIEWS_LIMIT`(10)편, 장소 글의 장소마다 반드시(`write_post`가 24시간 안의 읽은 기록이나 실패 기록이 없으면 거부)(`core/place_reviews.py`, 플레이스 '블로그 리뷰' 최신순). Claude에게는 수치, 제목, 소제목, 60자 이하 정보 줄과 감상 줄(리뷰당 최대 6개, `feeling_samples`, 추천 문구 재료)만 보낸다. 추천 문구도 겹침 검사 대상이다. 본문 줄은 `NBW_HOME/place_reviews/`에만 두고 24시간 동안 겹침 검사에만 쓴다.
   3. 네이버 주제별 인기글과 최신글 최대 `TREND_POSTS`(15)편, `TREND_MAX_AGE_DAYS`(7)일마다(`core/trends.py`). 형식 수치만 `NBW_HOME/trends/`에 저장하고 본문은 저장하지 않는다. 가이드의 '부록 B. 최신 경향'이 된다.
   2와 3은 `READ_OTHER_BLOGS=false`면 읽지 않고 장소 리뷰 필수 확인도 끈다. 같은 장소 리뷰 파일은 24시간 뒤 `purge_expired()`가 지우고, 경향 파일에는 글 주소를 저장하지 않는다.
   다른 사람 글의 문장, 제목, 소제목을 글에 쓰지 않는다(`archive.overlap_warnings`가 같은 장소 리뷰와 거의 같은 문장을 한 문장부터 경고).
 - `write_post`는 최근 게시물을 읽은 지 `STYLE_SYNC_MAX_AGE_MIN`분이 지났으면 거부한다. 이 조건을 도구 인자로 우회할 수 없게 둔다.
-- 사진은 `scan_media`의 `order`(촬영 시각순: EXIF 원본 시각과 시간대 → 파일 이름 날짜 → 파일 수정 시각, `media.capture_time()`)대로 넣는다. 두 사람이 같은 Drive 폴더에 올리므로 파일 이름순을 쓰지 않는다. 순서가 다르면 `write_post`가 경고만 한다(대표 사진, 영상 장면 제외).
+- 사진은 `scan_media`의 `order`(촬영 시각순: EXIF 원본 시각과 시간대 → 파일 이름 날짜 → 파일 수정 시각, `media.capture_time()`)대로 넣는다. 영상은 `com.apple.quicktime.creationdate`(아이폰 실제 촬영 시각)를 `creation_time`(Drive 업로드 때 바뀜)보다 먼저 읽는다.
+- 영상은 `video` 블록으로 그대로 올린다(`media.prepare_video_for_upload()`가 재인코딩 없이 위치 정보 메타데이터를 지운 사본). 폴더에 영상이 2개 이상이면 `scan_media`의 `video_question`으로 사용자에게 고르게 하고, `user_selected=true`가 없으면 `write_post`가 거부한다.
+- 이모지는 적극적으로(글당 12~25개, `default.md` 3-1절). 10절 내 스타일보다 이 절이 우선한다. 적거나 한 줄에 몰리면 lint가 경고한다. 두 사람이 같은 Drive 폴더에 올리므로 파일 이름순을 쓰지 않는다. 순서가 다르면 `write_post`가 경고만 한다(대표 사진, 영상 장면 제외).
 - 내 블로그 다른 글 링크(`link` 블록, `my_post_links`)는 사용자가 요청할 때만 마무리 상자 뒤에 넣는다. 내 블로그 주소만 허용한다(`Block` 검증).
 - 사진 속 음식의 이름과 설명도 본문에 쓰지 않고 fill로 넣는다(추천 문구에 정식 메뉴명). 제목에 음식 이름을 넣지 않는다. 글 끝은 `quote` 블록(말풍선, 포스트잇, 프레임)이다.
 - 주관 평가(맛, 외관 후기, 분위기, 느낀 점, 추천)는 쓰지 않고 `fill` 블록으로 `[이 부분에 직접 입력하시기 바랍니다]`(`formatting.PLACEHOLDER`)와 그 아래 `(추천 문구)` 줄 2~3개를 넣는다. 추천 문구는 사용자가 고르는 예시이고 사실로 쓰지 않는다. 사용자 메모의 평가만 `text`로 그대로 쓴다.
@@ -51,11 +53,11 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 ## 명령어
 ```bash
 uv sync                                                    # .venv 생성 (uv.lock 기준)
-BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 45항목 (네이버 접속 없음)
-uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진 촬영 시각 정렬 24항목
-BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰, 최신 경향, 다른 블로그 끄기 28항목
+BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 47항목 (네이버 접속 없음)
+uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진과 영상 촬영 시각 정렬 25항목
+BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰(감상 줄 포함), 최신 경향, 다른 블로그 끄기 31항목
 uv run python tests/archive_test.py                        # 겹침 경고 10항목
-uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 내 글 링크, 개인 규칙 파일 점검 36항목
+uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 이모지, 내 글 링크, 개인 규칙 파일 점검 40항목
 uvx ruff check src tests
 uv run naver-blog-writer                                   # 서버 직접 실행 (보통은 Claude Desktop이 실행)
 uv run mcp dev src/naver_blog_writer/server.py             # MCP Inspector (Node 필요)
@@ -92,7 +94,7 @@ src/naver_blog_writer/
     ├── formatting.py     # 한 줄 한 호흡 정리, fill 렌더링, lint(말투 점검 포함)
     ├── archive.py        # 최근 글 5개 기록과 겹침 경고 (블로그 사이트를 읽지 않음)
     ├── style.py  notes.py  history.py
-tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
+tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
 ```
 
 ## 도구 작성 규칙
@@ -129,6 +131,7 @@ tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모�
 - 입력을 너무 빠르게 넣으면 에디터가 잠깐 바쁜 순간(굵게 전환 직후 등)에 들어온 줄과 Enter를 통째로 버린다(24줄 중 1~15줄 손실). `write_paragraphs()`가 줄마다 `LINE_PACE_S`(0.12초), 굵게 전환마다 `BOLD_SETTLE_S`(0.15초) 쉰다. 이 간격을 줄이지 않는다.
 - 굵게는 Cmd/Ctrl+B로 켜고 끈다. 툴바 굵게 버튼의 `se-is-selected`는 줄을 바꾼 직후 이전 상태로 남아 있으므로 상태 판단에 쓰지 않는다.
 - 사진 설명칸은 사진을 선택해야 보인다.
+- 동영상: '동영상'(`data-name='video'`) → '동영상 업로더'(`.se-popup-video-upload`) → '동영상 추가'(`nvu_local`, 파일 선택) → 창에 '업로드 완료'가 뜰 때까지 대기 → 제목(`#nvu_inp_box_title`, 필수 40자) → '완료'(`nvu_btn_submit`)(`insert_video()`). '완료' 글자는 진행 상태 버튼(`nvu_btn_select`)에도 있으므로 클래스로 고른다.
 - 링크 카드: 툴바 '링크'(`data-name='oglink'`)는 눌러도 입력 창이 뜨지 않는다. 본문의 빈 줄에 주소를 입력하고 Enter를 누르면 에디터가 미리보기 카드(`se-oglink`)를 만들고 카드 아래 빈 문단으로 커서를 옮긴다(`insert_link()`). 주소 줄은 카드 위에 링크로 남는다. 붙여넣기 이벤트를 흉내 내면 무시된다.
 - 장소 팝업: Enter로는 검색되지 않고 '검색' 버튼을 누른다. '추가'는 결과 항목에 마우스를 올려야 보인다. '추가' 적용(`se-is-attached`) 후 '확인'을 누른다. Esc로 닫히지 않는다('팝업 닫기'). 화면 밖의 '글감 검색' 입력칸과 '추가' 버튼이 많으므로 반드시 팝업 안에서만 찾는다.
 - 장소 '검색' 클릭이 가끔 무시된다(결과 영역에 '검색 전' 안내문이 그대로 남음). `_search_place()`는 '검색 전' 상태면 다시 입력하고 다시 검색하며, '검색 전'이 사라졌는데 결과가 없을 때만 0건으로 본다. 0건이면 `insert_place()`가 상호명만(마지막 단어 제외)으로 다시 검색하고 주소로 지점을 고른다.
