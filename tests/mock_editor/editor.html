@@ -94,7 +94,17 @@ document.addEventListener('keydown', e => {
   if (!p) return;
   if (e.key === 'Enter') {                      // 새 문단은 윗 문단의 정렬을 이어받음(실제 에디터에서 확인)
     e.preventDefault(); const np = mkP(); const a = p.className.match(/se-text-paragraph-align-\w+/);
-    if (a) np.classList.add(a[0]); p.after(np); np.focus();
+    if (a) np.classList.add(a[0]); p.after(np);
+    // 블로그 글 주소만 있는 줄에서 Enter: 그 아래에 링크 미리보기 카드를 만들고, 카드 아래 새 텍스트 블록으로 커서를 옮김(실제 에디터에서 확인)
+    if (/^https?:\/\/(m\.)?blog\.naver\.com\/\S+$/.test(p.innerText.trim())) {
+      const comp = p.closest('.se-component');
+      const card = document.createElement('div'); card.className = 'se-component se-oglink se-l-large_image';
+      card.innerHTML = '<div class="se-section"><b>[카드] 내 블로그 글</b> blog.naver.com</div>';
+      const t = document.createElement('div'); t.className = 'se-component se-text';
+      let n = np; while (n) { const nx = n.nextElementSibling; t.appendChild(n); n = nx; }
+      comp.after(card); card.after(t); current = t;
+    }
+    np.focus();
   }
   else if (e.key === 'ArrowUp' && p.previousElementSibling) { e.preventDefault(); p.previousElementSibling.focus(); }
 });
@@ -249,7 +259,8 @@ function doSave() {
 }
 function snapshot() {
   return [...wrap.querySelectorAll(':scope > .se-component')].map(c =>
-    c.classList.contains('se-image') ? {img: c.dataset.file, src: c.querySelector('img').getAttribute('src'), caption: c.querySelector('.se-caption').innerText.trim()}
+    c.classList.contains('se-oglink') ? {cls: 'se-oglink', text: c.innerText.trim()}
+    : c.classList.contains('se-image') ? {img: c.dataset.file, src: c.querySelector('img').getAttribute('src'), caption: c.querySelector('.se-caption').innerText.trim()}
     : c.classList.contains('se-quotation') ? {cls: c.className.replace('se-component ', ''), text: [...c.querySelectorAll('.se-quote p')].map(p => p.innerText).join('\n')}
     : {cls: c.className.replace('se-component ', ''), text: c.innerText.trim(),
        paras: [...c.querySelectorAll('.se-text-paragraph')].map(p => ({align: (p.className.match(/align-(\w+)/) || [, 'left'])[1], html: p.innerHTML}))});

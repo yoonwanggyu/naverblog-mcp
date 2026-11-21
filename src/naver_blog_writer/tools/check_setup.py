@@ -5,7 +5,7 @@ import platform
 from mcp.types import ToolAnnotations
 
 from .. import config
-from ..core import blog_reader, history, media, style
+from ..core import blog_reader, history, media, style, trends
 from ..core.browser import browser_session, check_login
 
 ANNOTATIONS = ToolAnnotations(title="설치 점검", readOnlyHint=True, openWorldHint=True)
@@ -55,6 +55,16 @@ async def check_setup(check_browser: bool = True) -> dict:
     add("내 스타일(최근 게시물)", True, f"{len(cache.get('posts', []))}개, 마지막으로 읽은 시각 {cache.get('synced_at') or '없음'} "
         "(get_style_guide가 매번 갱신)")
     add("사진 GPS 제거", True, "켜짐" if config.STRIP_GPS else "꺼짐 (원본 위치 정보가 함께 올라갑니다)")
+    if config.READ_OTHER_BLOGS:
+        ages = []
+        for topic in ("맛집", "여행", "결혼준비", "취업준비"):
+            data = trends.load(topic)
+            if data:
+                ages.append(f"{data['directory_name']} {data['updated_at']}")
+        add("다른 블로그 읽기", True, "켜짐: 같은 장소 리뷰(장소 글마다), 주제별 인기글 경향(7일마다). 저장된 경향: "
+            + (", ".join(sorted(set(ages))) or "아직 없음(첫 get_style_guide 때 만듦)"))
+    else:
+        add("다른 블로그 읽기", True, "꺼짐(READ_OTHER_BLOGS=false): 내 글 5개와 기본 가이드만 씁니다.")
     if check_browser:
         try:
             async with browser_session() as (_ctx, page):

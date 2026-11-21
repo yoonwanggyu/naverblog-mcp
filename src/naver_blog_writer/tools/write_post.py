@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,7 @@ ANNOTATIONS = ToolAnnotations(
 NON_TEXT = {"subtitle", "quote", "divider", "image", "place"}
 CLOSING_STYLES = ("quotation_bubble", "quotation_postit", "quotation_corner")
 TEXTLIKE = {"text", "fill"}
+_OWN_POST = re.compile(r"https?://(?:m\.)?blog\.naver\.com/(?:([A-Za-z0-9_-]+)/(\d+)|PostView\.naver\?[^ ]*?blogId=([A-Za-z0-9_-]+)[^ ]*?logNo=(\d+))")
 QuoteStyle = Literal["quotation_line", "quotation_underline", "default", "quotation_bubble", "quotation_postit", "quotation_corner"]
 OpeningType = Literal["인사형", "상황형", "질문형", "요약형", "감성형"]
 
@@ -38,10 +40,10 @@ OpeningType = Literal["인사형", "상황형", "질문형", "요약형", "감�
 class Block(BaseModel):
     """본문 블록. 위에서부터 순서대로 에디터에 들어갑니다."""
 
-    type: Literal["text", "fill", "subtitle", "quote", "divider", "image", "place"] = Field(
+    type: Literal["text", "fill", "subtitle", "quote", "divider", "image", "place", "link"] = Field(
         description="text: 글(한 줄 한 호흡, \\n으로 줄 나눔, 빈 줄로 묶음 구분), fill: 주관 평가 자리(직접 입력 문구 + 추천 문구), "
                     "subtitle: 소제목(인용구), quote: 마무리 상자(말풍선, 포스트잇, 프레임 인용구, 여러 줄), "
-                    "divider: 구분선, image: 사진, place: 장소 지도"
+                    "divider: 구분선, image: 사진, place: 장소 지도, link: 내 블로그 다른 글의 링크 카드(사용자가 요청할 때만)"
     )
     text: str | None = Field(default=None, description="text, subtitle, quote의 내용. 줄 안의 **글자**는 굵게 들어갑니다. quote는 \\n으로 2~4줄")
     topic: str | None = Field(default=None, description="fill: 사용자가 채울 내용(예: '가지튀김 맛', '총평'). 보고용")
@@ -53,6 +55,7 @@ class Block(BaseModel):
     query: str | None = Field(default=None, description="place의 검색어. find_place 결과의 place_block.query")
     address: str | None = Field(default=None, description="place의 주소. find_place 결과의 place_block.address (같은 이름 지점 구분용)")
     place_id: str | None = Field(default=None, description="place의 네이버 장소 ID. find_place 결과의 place_block.place_id (같은 장소 리뷰 확인용)")
+    url: str | None = Field(default=None, description="link의 주소. my_post_links 결과의 url(내 블로그 글만)")
 
     @model_validator(mode="after")
     def _check(self) -> Block:
@@ -64,7 +67,23 @@ class Block(BaseModel):
             raise ValueError("image 블록에는 path가 필요합니다.")
         if self.type == "place" and not (self.query and self.query.strip()):
             raise ValueError("place 블록에는 query가 필요합니다.")
+        if self.type == "link":
+            m = _OWN_POST.match((self.url or "").strip())
+            blog_id, log_no = ((m.group(1), m.group(2)) if m and m.group(1) else (m.group(3), m.group(4)) if m else (None, None))
+            if not m or (config.BLOG_ID and blog_id != config.BLOG_ID):
+                raise ValueError("link 블록에는 내 블로그 글 주소만 넣습니다(my_post_links 결과의 url).")
+            self.url = f"https://blog.naver.com/{blog_id}/{log_no}"
         return self
+
+
+def _photo_order_warnings(paths: list[Path]) -> list[str]:
+    """사진이 촬영 시각 순서인지 확인합니다(두 사람이 올린 사진을 섞어 시간순). 첫 사진(대표 사진)과 영상 장면은 빼고 봅니다."""
+    timed = [(p, media.capture_time(p)[0]) for p in paths[1:] if config.CACHE_DIR not in p.parents]
+    wrong = [f"{a.name} → {b.name}" for (a, ta), (b, tb) in zip(timed, timed[1:], strict=False) if tb < ta]
+    if not wrong:
+        return []
+    return [f"사진이 촬영 시각 순서가 아닌 곳 {len(wrong)}군데: {wrong[:3]}. scan_media의 order 순서대로 넣으세요"
+            "(첫 사진인 대표 사진은 예외). 사용자가 다른 순서를 요청했으면 그대로 둡니다."]
 
 
 def _quote_lines(b: Block) -> list[str]:
@@ -135,12 +154,17 @@ async def write_post(
     """네이버 블로그 에디터에 제목과 블록을 순서대로 입력하고 임시저장합니다. 발행은 하지 않습니다(코드에서 차단).
 
     - 먼저 get_style_guide를 호출해야 합니다(최근 게시물을 읽지 않았으면 거부합니다).
-    - 맛 평가, 외관 후기, 분위기 감상, 느낀 점, 추천 여부 같은 주관 평가는 쓰지 말고 fill 블록(topic, suggestions 2~3개)을 넣습니다.
+    - 장소 글은 장소마다 place_reviews를 먼저 호출해야 합니다(24시간 안의 기록이 없으면 거부, 읽기 실패 기록이면 안내만).
+    - 맛 평가, 외관 후기, 분위기 감상, 느낀 점, 추천 여부 같은 주관 평가와 사진 속 음식의 이름과 설명은 쓰지 말고
+      fill 블록(topic, suggestions 2~3개, 음식은 정식 메뉴명)을 넣습니다.
       '[이 부분에 직접 입력하시기 바랍니다]' 아래에 '(추천 문구)' 줄이 붙어 들어갑니다.
     - text는 한 줄 한 호흡(15~28자)으로 \\n을 넣어 쓰고, 생각이 바뀌는 곳에 빈 줄을 둡니다. 32자가 넘는 줄은 자동으로 나눕니다.
       본문은 TEXT_ALIGN(기본 가운데) 정렬로 들어갑니다.
-    - subtitle은 인용구로(style로 모양 선택, 기본 세로선), divider는 구분선으로, place는 지도 첨부로 들어갑니다. place는 find_place의 place_block을 씁니다.
+    - subtitle은 인용구로(style로 모양 선택, 기본 세로선), divider는 구분선으로, place는 지도 첨부로 들어갑니다. place는 find_place의 place_block(place_id 포함)을 그대로 씁니다.
     - quote는 글 맨 끝 마무리 상자입니다(말풍선, 포스트잇, 프레임). 추천 상황 한 줄과 댓글, 공감, 이웃추가 같은 참여 문구를 2~4줄로 씁니다.
+    - link는 사용자가 요청할 때만 마무리 상자 뒤에 1~2개 넣는 내 블로그 다른 글 카드입니다(my_post_links의 url). 바로 앞 text에
+      "다른 주제도 궁금하시면" 같은 부드러운 한 줄을 둡니다. 주소 줄 아래에 지도처럼 미리보기 카드가 들어갑니다.
+    - 사진은 scan_media의 order(촬영 시각) 순서대로 넣습니다. 첫 사진(대표 사진)만 예외입니다.
     - sponsored: 협찬이면 표기 문구를 넣습니다. 본문 첫 블록으로 통째로 들어갑니다.
     - tags: 8~12개. 본문 끝에 #태그로 들어갑니다.
     - main_keyword, hook_pattern(도입 유형): 최근 글과 겹치는지 비교하는 데 쓰고, 기록에도 남깁니다. 항상 채웁니다.
@@ -172,6 +196,7 @@ async def write_post(
         raise ValueError(f"이미지가 {len(uploads)}장입니다. 최대 {config.MAX_IMAGES_PER_POST}장까지 허용합니다.")
     if len({str(p) for p in uploads.values()}) != len(uploads):
         raise ValueError("같은 사진이 두 번 이상 들어 있습니다. 사진 재사용은 유사문서 위험이 있습니다.")
+    order_warnings = await asyncio.to_thread(_photo_order_warnings, [uploads[i] for i in sorted(uploads)])
     for i, src in list(uploads.items()):
         uploads[i] = await asyncio.to_thread(media.prepare_for_upload, src)
 
@@ -182,7 +207,7 @@ async def write_post(
     }
     sponsor_paras = formatting.to_paragraphs(sponsored, keep=True) if sponsored else []
     dumped = [b.model_dump() for b in blocks]
-    warnings = formatting.lint(title, dumped, tags, sponsored)
+    warnings = formatting.lint(title, dumped, tags, sponsored) + order_warnings
     to_fill = formatting.count_placeholders(title, dumped)
     subtitles = [formatting.clean_line(b.text or "") for b in blocks if b.type == "subtitle"]
     body_text = "\n".join(
@@ -202,7 +227,8 @@ async def write_post(
              **({"text": b.text, "style": b.style or config.SUBTITLE_STYLE} if b.type == "subtitle" else {}),
              **({"lines": _quote_lines(b), "style": b.style or CLOSING_STYLES[0]} if b.type == "quote" else {}),
              **({"file": str(uploads[i]), "caption": b.caption} if b.type == "image" else {}),
-             **({"query": b.query, "address": b.address} if b.type == "place" else {})}
+             **({"query": b.query, "address": b.address} if b.type == "place" else {}),
+             **({"url": b.url} if b.type == "link" else {})}
             for i, b in enumerate(blocks)
         ],
         "tags": tags or [],
@@ -231,7 +257,7 @@ async def write_post(
 
     notes: list[str] = list(place_notes)
     expected: list[str] = [title]
-    counts = {"image": 0, "subtitle": 0, "divider": 0, "place": 0}
+    counts = {"image": 0, "subtitle": 0, "divider": 0, "place": 0, "link": 0}
     layout: list[str] = []
     total = len(blocks) + 4
 
@@ -258,7 +284,7 @@ async def write_post(
                 log.info("write_post: %s", step)
                 await _progress(ctx, idx + 1, total, f"{step} 입력 중")
                 await editor.dismiss_popups(frame)
-                if prev in NON_TEXT:
+                if prev in NON_TEXT or prev == "link":
                     await editor.move_to_end(frame)
                 if b.type in NON_TEXT:
                     await editor.prepare_block_slot(frame)  # 블록 아래에 들어갈 빈 문단을 미리 만듦
@@ -297,6 +323,15 @@ async def write_post(
                         await editor.write_paragraphs(frame, [[line]], align=config.TEXT_ALIGN)
                         expected.append(line)
                         b = Block(type="text", text=line)
+                elif b.type == "link":
+                    made = await editor.insert_link(frame, b.url or "")
+                    expected.append(b.url or "")
+                    layout.append("text")  # 카드 위에 남는 주소 줄
+                    if made:
+                        counts["link"] += 1
+                    else:
+                        notes.append(f"링크 '{b.url}': 미리보기 카드가 만들어지지 않아 주소 줄(누를 수 있는 링크)만 남았습니다.")
+                        b = Block(type="text", text=b.url or "")
                 prev = "text" if b.type in TEXTLIKE else "subtitle" if b.type == "quote" else b.type
                 layout.append(prev)
                 await editor.dismiss_popups(frame)

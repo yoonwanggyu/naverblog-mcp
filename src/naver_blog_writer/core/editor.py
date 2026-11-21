@@ -499,6 +499,28 @@ async def insert_quote(frame: Frame, lines: list[str], style: str = "quotation_b
         await type_line(frame, line)
 
 
+async def insert_link(frame: Frame, url: str, timeout_s: float = 10) -> bool:
+    """지금 커서가 있는 빈 줄에 주소를 입력하고 Enter를 눌러 링크 미리보기 카드(대표 사진, 제목, 요약)를 만듭니다.
+
+    툴바의 '링크' 버튼은 눌러도 입력 창이 뜨지 않습니다. 대신 본문에 주소만 있는 줄에서 Enter를 누르면 에디터가 카드를 만들고,
+    카드 아래에 빈 문단을 남겨 커서를 옮깁니다(실제 에디터에서 확인). 주소 줄은 카드 위에 누를 수 있는 링크로 남습니다.
+    카드가 timeout_s 안에 생기지 않으면 False(주소 줄만 남음).
+    """
+    page = frame.page
+    before = await frame.locator(S.OGLINK_COMPONENT).count()
+    await asyncio.sleep(LINE_PACE_S)
+    await type_text(page, url)
+    await asyncio.sleep(LINE_PACE_S)
+    await page.keyboard.press("Enter")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if await frame.locator(S.OGLINK_COMPONENT).count() > before:
+            await asyncio.sleep(0.5)
+            return True
+        await asyncio.sleep(0.4)
+    return False
+
+
 async def insert_divider(frame: Frame) -> None:
     before = await frame.locator(S.DIVIDER_COMPONENT).count()
     await _click_toolbar(frame, S.DIVIDER_BUTTON, S.DIVIDER_BUTTON_NAMES, "구분선")
@@ -842,6 +864,8 @@ def _kind(cls: str, text: str) -> str | None:
         return "image"
     if "se-placesMap" in k or "se-map" in k:
         return "place"
+    if "se-oglink" in k:
+        return "link"
     return "other"
 
 
@@ -883,6 +907,7 @@ async def verify_text(frame: Frame, expected: list[str], counts: dict[str, int],
         "subtitle": count("se-quotation"),
         "divider": count("se-horizontalLine"),
         "place": count("se-placesMap") + count("se-map"),
+        "link": count("se-oglink"),
     }
     count_mismatch = {k: {"expected": v, "actual": actual.get(k, 0)} for k, v in counts.items() if actual.get(k, 0) != v}
     out: dict[str, Any] = {
@@ -913,6 +938,7 @@ async def inspect(frame: Frame) -> dict[str, Any]:
         "PLACE_BUTTON": S.PLACE_BUTTON, "FILE_INPUT": S.FILE_INPUT, "SAVE_BUTTON": S.SAVE_BUTTON,
         "PUBLISH_BLOCKLIST": S.PUBLISH_BLOCKLIST, "POPUP_DRAFT_CANCEL": S.POPUP_DRAFT_CANCEL,
         "POPUP_HELP_CLOSE": S.POPUP_HELP_CLOSE, "SAVE_COUNT": S.SAVE_COUNT, "SAVE_TOAST": S.SAVE_TOAST,
+        "ALIGN_DROPDOWN": S.ALIGN_DROPDOWN, "QUOTE_STYLE_DROPDOWN": S.QUOTE_STYLE_DROPDOWN,
     }
     for name, sels in groups.items():
         report["selectors"][name] = {sel: await frame.locator(sel).count() for sel in sels}
@@ -926,6 +952,8 @@ async def inspect(frame: Frame) -> dict[str, Any]:
         except Exception:
             txt = ""
         report["components"].append({"index": i, "class": await c.get_attribute("class"), "text": txt})
+    # 창이 떠 있을 때나 저장 직후에만 보이는 요소, 대체 수단은 0이어도 정상입니다.
+    report["zero_is_normal"] = ["FILE_INPUT(대체 수단)", "POPUP_DRAFT_CANCEL", "POPUP_HELP_CLOSE", "SAVE_TOAST(저장 직후에만)"]
     report["toolbar_buttons"] = await frame.evaluate(
         """() => [...document.querySelectorAll('button')].filter(b => b.offsetParent).slice(0, 60)
              .map(b => ({cls: b.className.slice(0, 80), text: (b.innerText || b.getAttribute('aria-label') || '').trim().slice(0, 20),

@@ -83,6 +83,12 @@ quiz = human + [{"type": "subtitle", "text": "초밥 퍼레이드"}, {"type": "t
 check("퀴즈와 비유 소제목 경고", has(lint(quiz, title=GOOD_TITLE), "사람이 쓰지 않는 장치"))
 narr = human + [{"type": "text", "text": "흰 접시는 그대로 두고\n단면을 보면 계란이 빼곡해요"}] + closing
 check("음식 생김새 해설 줄 경고", has(lint(narr, title=GOOD_TITLE), "음식 생김새를 해설"))
+LINK = {"type": "link", "url": "https://blog.naver.com/me/224000000001"}
+lead = {"type": "text", "text": "맛집 말고 다른 이야기도 궁금하시다면\n여기 남겨 둘게요"}
+w = lint(human + closing + [lead, LINK], title=GOOD_TITLE)
+check("마무리 상자 뒤 안내 한 줄 + 내 글 링크는 경고 없음", not any(k in " ".join(w) for k in ("마무리 상자", "링크")), str(w))
+check("내 글 링크 3개 이상 경고", has(lint(human + closing + [lead, LINK, LINK, LINK], title=GOOD_TITLE), "내 글 링크가 3개"))
+check("링크 앞 안내 한 줄 없으면 경고", has(lint(human + closing + [LINK], title=GOOD_TITLE), "안내 한 줄"))
 c = f.count_placeholders("제목", human + [{"type": "text", "text": "가격 [[확인필요: 가격]]"}])
 check("채울 자리 개수(직접 입력, 추천 문구 줄, 확인필요)", c == {"직접_입력": 1, "추천_문구_줄": 2, "확인필요": 1}, str(c))
 

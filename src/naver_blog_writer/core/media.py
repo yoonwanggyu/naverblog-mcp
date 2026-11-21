@@ -95,9 +95,15 @@ def read_exif(path: Path) -> dict[str, Any]:
                 return info
             sub = exif.get_ifd(0x8769)  # Exif IFD
             raw_dt = sub.get(36867) or sub.get(36868) or exif.get(306)  # DateTimeOriginal, Digitized, DateTime
+            offset = sub.get(36881) or sub.get(36882) or sub.get(36880)  # OffsetTimeOriginal, Digitized, OffsetTime
             if raw_dt:
                 try:
-                    info["taken_at"] = datetime.strptime(str(raw_dt).strip(), "%Y:%m:%d %H:%M:%S").isoformat()
+                    dt = datetime.strptime(str(raw_dt).strip(), "%Y:%m:%d %H:%M:%S")
+                    if offset and re.match(r"^[+-]\d{2}:\d{2}$", str(offset).strip()):
+                        # 기기마다 시간대가 다를 수 있어 이 컴퓨터의 현지 시각으로 맞춥니다(두 사람 사진을 섞어 정렬).
+                        dt = datetime.fromisoformat(dt.isoformat() + str(offset).strip()).astimezone().replace(tzinfo=None)
+                    info["taken_at"] = dt.isoformat(timespec="seconds")
+                    info["time_source"] = "exif"
                 except ValueError:
                     pass
             model = exif.get(272)
@@ -192,6 +198,39 @@ def extract_frames(video: Path, count: int = 6, max_width: int = 1280) -> list[P
 # 폴더 찾기(이름 해석, 날짜와 오타 비교)는 core/folders.py에 있습니다.
 
 
+# ---------------------------------------------------------------- 촬영 시각과 정렬
+
+# 파일 이름 속 날짜와 시각: KakaoTalk_20261114_123456789, IMG_20261114_123456, 20261114_123456, Screenshot_2026-11-14-12-34-56
+_NAME_DT = re.compile(r"(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[-_ T]?(\d{2})[-_.:]?(\d{2})[-_.:]?(\d{2})")
+
+
+def time_from_name(name: str) -> str | None:
+    m = _NAME_DT.search(name)
+    if not m:
+        return None
+    try:
+        return datetime(*map(int, m.groups())).isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def capture_time(path: Path, meta: dict[str, Any] | None = None) -> tuple[str, str]:
+    """사진이나 영상이 만들어진(찍힌) 시각과 그 출처.
+
+    두 사람이 같은 Drive 폴더에 각자 사진을 올리므로 파일 이름이나 업로드 순서가 아니라 촬영 시각으로 섞어 정렬합니다.
+    1) EXIF 원본 촬영 시각(시간대가 있으면 현지 시각으로 보정) 또는 영상 메타데이터의 촬영 시각
+    2) 파일 이름 속 날짜(메신저로 받아 EXIF가 지워진 사진, 스크린샷)
+    3) 파일 수정 시각(마지막 수단)
+    """
+    meta = meta if meta is not None else (read_exif(path) if path.suffix.lower() in IMAGE_EXT else {})
+    if meta.get("taken_at"):
+        return meta["taken_at"], meta.get("time_source") or "exif"
+    by_name = time_from_name(path.name)
+    if by_name:
+        return by_name, "file_name"
+    return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"), "file_modified"
+
+
 # ---------------------------------------------------------------- 스캔과 미리보기
 
 def scan_folder(folder: Path, recursive: bool = False) -> list[dict[str, Any]]:
@@ -212,13 +251,17 @@ def scan_folder(folder: Path, recursive: bool = False) -> list[dict[str, Any]]:
                     item["duration_sec"] = round(d, 1)
                 if ct:
                     item["taken_at"] = ct
+                    item["time_source"] = "video_meta"
             except Exception as e:
                 item["error"] = f"영상 정보 읽기 실패: {e}"
         else:
             continue
+        item["taken_at"], item["time_source"] = capture_time(p, item)
         items.append(item)
-    # 촬영 시각이 있으면 시간순, 없으면 파일명순
-    items.sort(key=lambda x: (x.get("taken_at") or "9999", x["path"]))
+    # 촬영 시각순(두 사람이 올린 사진도 섞어서). 같은 시각이면 파일 이름순.
+    items.sort(key=lambda x: (x["taken_at"], x["path"]))
+    for i, it in enumerate(items, 1):
+        it["order"] = i
     return items
 
 

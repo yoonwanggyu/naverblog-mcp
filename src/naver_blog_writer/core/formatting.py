@@ -226,8 +226,15 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
     if odd:
         w.append(f"마무리 상자 모양 {odd}: 기본은 말풍선, 포스트잇, 프레임입니다. 사용자가 요청한 모양이면 그대로 둡니다.")
     quotes = [i for i, b in enumerate(blocks) if b.get("type") == "quote"]
-    if not quotes or quotes[-1] < len(blocks) - 3:
-        w.append("글 끝에 마무리 상자(quote, 말풍선, 포스트잇, 프레임 중 하나)가 없습니다. 추천 상황과 댓글, 공감, 이웃추가 같은 참여 문구를 2~4줄로 넣으세요.")
+    after = [b.get("type") for b in blocks[quotes[-1] + 1:]] if quotes else []
+    if not quotes or any(t not in ("text", "link") for t in after):
+        w.append("글 끝에 마무리 상자(quote, 말풍선, 포스트잇, 프레임 중 하나)가 없습니다. 추천 상황과 댓글, 공감, 이웃추가 같은 참여 문구를 2~4줄로 넣으세요."
+                 " 마무리 상자 뒤에는 내 글 링크(link)와 그 안내 한 줄만 둡니다.")
+    links = [i for i, b in enumerate(blocks) if b.get("type") == "link"]
+    if len(links) > 2:
+        w.append(f"내 글 링크가 {len(links)}개입니다. 다른 주제 글 1~2개가 적당합니다.")
+    if links and not any(blocks[i - 1].get("type") == "text" for i in links if i > 0):
+        w.append("내 글 링크 앞에 '다른 주제도 궁금하시면 여기 남겨 둘게요'처럼 부드러운 안내 한 줄(text)을 두세요.")
     if any(FAQ_SUBTITLE.search(s) for s in subtitles):
         w.append("'자주 묻는 질문' 소제목은 쓰지 않습니다. 필요한 정보는 본문 흐름과 정보 줄에 넣으세요.")
     q_subs = [s for s in subtitles if s.rstrip().endswith("?")]

@@ -43,6 +43,8 @@ IMAGE_COMPONENT = ".se-component.se-image, .se-component.se-imageStrip, .se-comp
 QUOTE_COMPONENT = ".se-component.se-quotation"
 DIVIDER_COMPONENT = ".se-component.se-horizontalLine"
 PLACE_COMPONENT = ".se-component.se-placesMap, .se-component.se-map"
+# 링크 미리보기 카드. 툴바 '링크' 버튼은 눌러도 창이 뜨지 않고, 본문 줄에 주소를 입력하고 Enter를 누르면 카드가 생깁니다(실제 에디터에서 확인).
+OGLINK_COMPONENT = ".se-component.se-oglink"
 
 # 툴바 버튼 (클래스 우선, 실패하면 이름으로)
 IMAGE_BUTTON = ["button.se-image-toolbar-button", "button[data-name='image']"]

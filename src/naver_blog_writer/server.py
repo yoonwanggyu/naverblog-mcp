@@ -31,7 +31,8 @@ INSTRUCTIONS = """네이버 블로그 초안 작성 도구입니다. 결과물�
    오래됐으면 다시 분석한 뒤 전체 가이드를 돌려줍니다.
 2) list_folders(query=사용자가 말한 날짜와 장소 그대로). needs_confirmation=true면 confirm_question을 그대로 보여 주고
    '이게 맞습니까?'에 대한 답을 받은 뒤에만 scan_media(user_confirmed=true)로 진행합니다.
-3) scan_media → view_images. 영상은 extract_video_frames.
+3) scan_media → view_images. 영상은 extract_video_frames. 사진은 scan_media의 order(촬영 시각순, 두 사람이 올린 사진을 섞은 순서)대로
+   글에 넣습니다. 첫 대표 사진만 예외이고, 빼는 것은 되지만 순서는 바꾸지 않습니다.
 4) 장소 글이면 find_place(query=장소명, folder=폴더 경로)로 위치를 찾고, place_block을 place 블록으로 씁니다. confident=false면 사용자에게 확인합니다.
 5) 장소가 정해지면 장소마다 반드시 place_reviews(place_id=find_place의 place_id)로 같은 장소의 최신 블로그 리뷰 10편을 분석합니다.
    읽지 않은 장소가 있으면 write_post가 저장을 거부합니다. place 블록에는 place_block을 그대로(place_id 포함) 씁니다.
@@ -46,6 +47,8 @@ INSTRUCTIONS = """네이버 블로그 초안 작성 도구입니다. 결과물�
    음식 사진에는 본문을 붙이지 않고 fill(메뉴 이름과 맛, 추천 문구에 정식 메뉴명)만 둡니다. 퀴즈, 비유 소제목은 쓰지 않습니다.
    제목: [분류] 상호명 시간대 위치 내돈내산 후기 (feat. 확인된 특징) 이모지. 음식 이름은 제목에 쓰지 않습니다.
    글 끝에는 quote 블록(말풍선, 포스트잇, 프레임)으로 추천 상황과 댓글, 공감, 이웃추가 같은 참여 문구를 넣습니다.
+   사용자가 내 다른 글 링크를 요청하면 my_post_links로 카테고리가 다른 글 1~2개를 골라, 마무리 상자 뒤에 부드러운 안내 한 줄(text)과
+   link 블록을 넣습니다(요청이 없으면 넣지 않음).
 7) write_post(dry_run=true)로 lint_warnings(말투 경고 포함)와 overlap_warnings(최근 글, 같은 장소 리뷰와 겹침)를 고친 뒤 write_post로 임시저장합니다.
    main_keyword와 hook_pattern(도입 유형)은 항상 채웁니다.
 8) 검증은 1회입니다. 불일치나 저장 미확인(saved_confirmed=false)이면 반복하지 말고 결과를 보여 준 뒤 사용자에게 묻습니다.

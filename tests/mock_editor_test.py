@@ -94,6 +94,8 @@ BLOCKS = [
     Block(type="subtitle", text="성수 카페어니언은 어디에 있나요?", style="quotation_underline"),
     Block(type="text", text="**✔️ 팡도르 / 7,500원**\n다음엔 저녁도 먹어볼게요. 또 올 것 같아요 😊"),
     Block(type="quote", style="quotation_bubble", text="성수 카페 찾는 분이라면 참고해 보세요\n궁금한 점은 **댓글**로 남겨 주세요 :)"),
+    Block(type="text", text="카페 말고 다른 데이트 기록도 궁금하시다면\n여기 남겨 둘게요"),
+    Block(type="link", url="https://m.blog.naver.com/testblog/224000000001"),
 ]
 TITLE = "성수 데이트 코스 카페어니언 후기"
 TAGS = ["성수데이트", "카페어니언"]
@@ -156,7 +158,11 @@ async def main() -> int:
     kinds = [d.get("cls", "img").split()[0] if "cls" in d else "img" for d in doc]
     seq = [k for k in kinds if k != "se-text"]
     check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
-                            "se-quotation"], str(kinds))
+                            "se-quotation", "se-oglink"], str(kinds))
+    texts_before_card = [d.get("text", "") for d in doc[:-1]]
+    check("내 글 링크: 주소 줄 아래 카드, 그 아래 태그", kinds[-2:] == ["se-oglink", "se-text"]
+          and any("https://blog.naver.com/testblog/224000000001" in t for t in texts_before_card)
+          and "#성수데이트" in doc[-1].get("text", ""), str(kinds[-4:]))
     quotes = [d["text"] for d in doc if d.get("cls", "").startswith("se-quotation")]
     check("소제목 글자가 쪼개지지 않음(인용구 다음 문단)", quotes[:2] == ["성수 카페어니언 분위기는 어땠나요?", "성수 카페어니언은 어디에 있나요?"], str(quotes))
     qcls = [d["cls"] for d in doc if d.get("cls", "").startswith("se-quotation")]
@@ -224,6 +230,11 @@ async def main() -> int:
     res = json.loads(r[0]) if r[0].startswith("{") else {}
     check("저장 미확인이면 성공으로 보고하지 않음", res.get("ok") is False and res.get("saved_confirmed") is False, res.get("save_signal", r[0][:80]))
     cap["no_save"] = False
+    try:
+        Block(type="link", url="https://blog.naver.com/someoneelse/224000000001")
+        check("다른 사람 블로그 링크는 거부", False, "통과해 버림")
+    except ValueError:
+        check("다른 사람 블로그 링크는 거부", True)
     try:
         await write_post(title="네 번째 글 테스트 제목입니다", blocks=[Block(type="text", text="네 번째 글입니다.")], review_seconds=0)
         check("하루 한도 차단(미확인 저장 포함)", False)

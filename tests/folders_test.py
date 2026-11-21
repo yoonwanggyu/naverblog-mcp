@@ -1,4 +1,5 @@
-"""폴더 찾기 검증: 여러 날짜 형식, 장소명 오타, EXIF 날짜, 하위 폴더, '이게 맞습니까?' 확인. 브라우저와 네트워크가 필요 없습니다.
+"""폴더 찾기 검증: 여러 날짜 형식, 장소명 오타, EXIF 날짜, 하위 폴더, '이게 맞습니까?' 확인,
+두 사람이 올린 사진의 촬영 시각 정렬. 브라우저와 네트워크가 필요 없습니다.
 
     uv run python tests/folders_test.py
 """
@@ -16,12 +17,20 @@ tmp = Path(tempfile.mkdtemp(prefix="nbw_folders_"))
 root = tmp / "네이버블로그"
 
 
-def photo(folder: Path, name: str, taken: str | None = None) -> None:
+def photo(folder: Path, name: str, taken: str | None = None, original: str | None = None, offset: str | None = None,
+          model: str | None = None) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     im = Image.new("RGB", (64, 48), (120, 90, 60))
     exif = Image.Exif()
     if taken:
         exif[306] = taken  # DateTime
+    if model:
+        exif[272] = model
+    if original:  # Exif IFD: DateTimeOriginal, OffsetTimeOriginal
+        ifd = exif.get_ifd(0x8769)
+        ifd[36867] = original
+        if offset:
+            ifd[36881] = offset
     im.save(folder / name, exif=exif.tobytes())
 
 
@@ -34,6 +43,13 @@ photo(root / "웨딩홀투어", "e.jpg", "2026:11:01 11:00:00")       # 이름�
 photo(root / "2026년 10월 3일 한강피크닉", "f.jpg")
 photo(root / "Nov 5 이태원", "g.jpg")
 (root / "빈폴더").mkdir()
+# 두 사람이 같은 폴더에 올린 사진: 파일 이름순과 촬영 시각순이 다름
+both = root / "둘이같이(26.09.20)"
+photo(both, "IMG_0001.JPG", original="2026:09:20 12:00:00", offset="+09:00", model="iPhone 16")
+photo(both, "IMG_0002.JPG", original="2026:09:20 12:30:00", offset="+09:00", model="iPhone 16")
+photo(both, "20260920_121500.jpg", original="2026:09:20 12:15:00", model="SM-S928N")
+photo(both, "PXL_A.jpg", original="2026:09:20 03:20:00", offset="+00:00", model="Pixel 9")    # UTC 03:20 = 한국 12:20
+photo(both, "KakaoTalk_20260920_124500123.jpg")                                                # EXIF 없음 -> 파일 이름 날짜
 
 os.environ["NBW_NO_DOTENV"] = "1"  # 테스트는 레포의 .env를 읽지 않습니다
 os.environ.update(MEDIA_ROOTS=str(root), NBW_HOME=str(tmp / "home"))
@@ -109,4 +125,27 @@ async def gate():
 
 
 asyncio.run(gate())
+
+
+# 5) 두 사람이 올린 사진은 촬영 시각으로 섞어 정렬
+async def order():
+    os.environ["TZ"] = "Asia/Seoul"
+    import time as _t
+    _t.tzset()
+    res = await scan_media(str(both), user_confirmed=True)
+    names = [i["path"].rsplit("/", 1)[-1] for i in res["items"]]
+    check("두 기기 사진을 촬영 시각순으로 섞음(시간대 보정 포함)",
+          names == ["IMG_0001.JPG", "20260920_121500.jpg", "PXL_A.jpg", "IMG_0002.JPG", "KakaoTalk_20260920_124500123.jpg"], str(names))
+    check("순서 번호와 시각 출처", [i["order"] for i in res["items"]] == [1, 2, 3, 4, 5]
+          and res["items"][-1]["time_source"] == "file_name" and res["items"][0]["time_source"] == "exif",
+          str([(i["order"], i["time_source"]) for i in res["items"]]))
+    check("기기별 사진 수", res["devices"].get("iPhone 16") == 2 and res["devices"].get("SM-S928N") == 1, str(res["devices"]))
+    from naver_blog_writer.tools.write_post import _photo_order_warnings
+    paths = [Path(i["path"]) for i in res["items"]]
+    check("촬영 순서대로면 경고 없음", _photo_order_warnings(paths) == [])
+    check("순서가 바뀌면 경고(첫 사진은 대표 사진이라 제외)",
+          len(_photo_order_warnings([paths[0], paths[3], paths[1]])) == 1 and _photo_order_warnings([paths[3], paths[0], paths[1]]) == [])
+
+
+asyncio.run(order())
 sys.exit(0 if all(results) else 1)

@@ -35,6 +35,8 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
   2와 3은 `READ_OTHER_BLOGS=false`면 읽지 않고 장소 리뷰 필수 확인도 끈다. 같은 장소 리뷰 파일은 24시간 뒤 `purge_expired()`가 지우고, 경향 파일에는 글 주소를 저장하지 않는다.
   다른 사람 글의 문장, 제목, 소제목을 글에 쓰지 않는다(`archive.overlap_warnings`가 같은 장소 리뷰와 거의 같은 문장을 한 문장부터 경고).
 - `write_post`는 최근 게시물을 읽은 지 `STYLE_SYNC_MAX_AGE_MIN`분이 지났으면 거부한다. 이 조건을 도구 인자로 우회할 수 없게 둔다.
+- 사진은 `scan_media`의 `order`(촬영 시각순: EXIF 원본 시각과 시간대 → 파일 이름 날짜 → 파일 수정 시각, `media.capture_time()`)대로 넣는다. 두 사람이 같은 Drive 폴더에 올리므로 파일 이름순을 쓰지 않는다. 순서가 다르면 `write_post`가 경고만 한다(대표 사진, 영상 장면 제외).
+- 내 블로그 다른 글 링크(`link` 블록, `my_post_links`)는 사용자가 요청할 때만 마무리 상자 뒤에 넣는다. 내 블로그 주소만 허용한다(`Block` 검증).
 - 사진 속 음식의 이름과 설명도 본문에 쓰지 않고 fill로 넣는다(추천 문구에 정식 메뉴명). 제목에 음식 이름을 넣지 않는다. 글 끝은 `quote` 블록(말풍선, 포스트잇, 프레임)이다.
 - 주관 평가(맛, 외관 후기, 분위기, 느낀 점, 추천)는 쓰지 않고 `fill` 블록으로 `[이 부분에 직접 입력하시기 바랍니다]`(`formatting.PLACEHOLDER`)와 그 아래 `(추천 문구)` 줄 2~3개를 넣는다. 추천 문구는 사용자가 고르는 예시이고 사실로 쓰지 않는다. 사용자 메모의 평가만 `text`로 그대로 쓴다.
 - 저장은 완료 신호(알림, 저장 글 수, 저장 응답)를 확인한 뒤에만 성공으로 보고한다. 미확인 저장도 하루 한도와 중복 방지에 센다.
@@ -49,11 +51,11 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 ## 명령어
 ```bash
 uv sync                                                    # .venv 생성 (uv.lock 기준)
-BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 43항목 (네이버 접속 없음)
-uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문) 19항목
+BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 45항목 (네이버 접속 없음)
+uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진 촬영 시각 정렬 24항목
 BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰, 최신 경향, 다른 블로그 끄기 28항목
 uv run python tests/archive_test.py                        # 겹침 경고 10항목
-uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 개인 규칙 파일 점검 33항목
+uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 내 글 링크, 개인 규칙 파일 점검 36항목
 uvx ruff check src tests
 uv run naver-blog-writer                                   # 서버 직접 실행 (보통은 Claude Desktop이 실행)
 uv run mcp dev src/naver_blog_writer/server.py             # MCP Inspector (Node 필요)
@@ -74,7 +76,7 @@ src/naver_blog_writer/
 │   ├── get_style_guide.py  recent_posts.py  list_folders.py  scan_media.py  view_images.py
 │   ├── extract_video_frames.py  find_place.py  place_reviews.py  load_research.py  save_research.py
 │   ├── write_post.py     # Block 모델, 정리, lint, 한도, 입력, 검증, 임시저장
-│   └── refresh_trends.py  check_setup.py  login_status.py  open_login_window.py  inspect_editor.py
+│   └── my_post_links.py  refresh_trends.py  check_setup.py  login_status.py  open_login_window.py  inspect_editor.py
 ├── prompts/              # MCP 프롬프트(+ 메뉴의 /write, /research). 파일명 = 프롬프트명
 │   ├── write.py          # 입력 모두 선택: 폴더 또는 주제, 제목, 큰 틀, 메모
 │   └── research.py       # 최근 N개월, 출처 5개 이상, 광고 제외, 충돌 병기
@@ -90,7 +92,7 @@ src/naver_blog_writer/
     ├── formatting.py     # 한 줄 한 호흡 정리, fill 렌더링, lint(말투 점검 포함)
     ├── archive.py        # 최근 글 5개 기록과 겹침 경고 (블로그 사이트를 읽지 않음)
     ├── style.py  notes.py  history.py
-tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
+tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
 ```
 
 ## 도구 작성 규칙
@@ -98,7 +100,7 @@ tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모�
 - docstring이 Claude가 보는 도구 설명이다. 한국어로 언제 쓰는지와 주의점을 2~5줄로 쓴다.
 - 입력 검증 실패는 예외로 던진다. 브라우저 작업 실패는 `FAILED ...` 텍스트로 반환한다.
 - 이미지는 `mcp.server.fastmcp.Image`로 반환하고 한 번에 최대 10장, 긴 변 1024px 기본.
-- 작업 순서(스타일 가이드와 최근 글과 최신 경향, 폴더 찾기와 확인, 스캔, 보기, 장소 찾기, 같은 장소 리뷰, dry_run, 임시저장)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
+- 작업 순서(스타일 가이드와 최근 글과 최신 경향, 폴더 찾기와 확인, 스캔, 보기, 장소 찾기, 같은 장소 리뷰, 요청 시 내 글 링크, dry_run, 임시저장)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
 - 파일, 이미지, ffmpeg처럼 오래 걸리는 동기 작업은 `asyncio.to_thread`로 돌린다. 오래 걸리는 도구는 `ctx.report_progress`로 진행 상황을 보낸다.
 - 사용자를 기다리는 도구(로그인)는 호출을 붙잡지 않는다. 창을 띄우고 바로 돌아온 뒤 상태 도구로 확인한다.
 
@@ -127,6 +129,7 @@ tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모�
 - 입력을 너무 빠르게 넣으면 에디터가 잠깐 바쁜 순간(굵게 전환 직후 등)에 들어온 줄과 Enter를 통째로 버린다(24줄 중 1~15줄 손실). `write_paragraphs()`가 줄마다 `LINE_PACE_S`(0.12초), 굵게 전환마다 `BOLD_SETTLE_S`(0.15초) 쉰다. 이 간격을 줄이지 않는다.
 - 굵게는 Cmd/Ctrl+B로 켜고 끈다. 툴바 굵게 버튼의 `se-is-selected`는 줄을 바꾼 직후 이전 상태로 남아 있으므로 상태 판단에 쓰지 않는다.
 - 사진 설명칸은 사진을 선택해야 보인다.
+- 링크 카드: 툴바 '링크'(`data-name='oglink'`)는 눌러도 입력 창이 뜨지 않는다. 본문의 빈 줄에 주소를 입력하고 Enter를 누르면 에디터가 미리보기 카드(`se-oglink`)를 만들고 카드 아래 빈 문단으로 커서를 옮긴다(`insert_link()`). 주소 줄은 카드 위에 링크로 남는다. 붙여넣기 이벤트를 흉내 내면 무시된다.
 - 장소 팝업: Enter로는 검색되지 않고 '검색' 버튼을 누른다. '추가'는 결과 항목에 마우스를 올려야 보인다. '추가' 적용(`se-is-attached`) 후 '확인'을 누른다. Esc로 닫히지 않는다('팝업 닫기'). 화면 밖의 '글감 검색' 입력칸과 '추가' 버튼이 많으므로 반드시 팝업 안에서만 찾는다.
 - 장소 '검색' 클릭이 가끔 무시된다(결과 영역에 '검색 전' 안내문이 그대로 남음). `_search_place()`는 '검색 전' 상태면 다시 입력하고 다시 검색하며, '검색 전'이 사라졌는데 결과가 없을 때만 0건으로 본다. 0건이면 `insert_place()`가 상호명만(마지막 단어 제외)으로 다시 검색하고 주소로 지점을 고른다.
 - 장소 첫 첨부는 지도 이미지 생성 요청(staticmap)이 실패해 '확인'이 먹지 않는 경우가 많다. `insert_place()`가 최대 3번 다시 시도한다. 숨김 창(HEADLESS=true)에서는 지도 이미지를 못 만들어 첨부가 실패한다.
