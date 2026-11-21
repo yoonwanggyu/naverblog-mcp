@@ -74,23 +74,33 @@ open -e .env
 - `NAVER_BLOG_ID`: 내 블로그 주소 `blog.naver.com/` 뒤의 글자
 - `MEDIA_ROOTS`: Finder에서 사진 폴더를 선택하고 `Option + Command + C`로 복사한 경로
 
-**4. Claude Desktop에 등록** (2번의 `naverblog-mcp` 폴더에서 그대로 붙여 넣기)
+**4. Claude Desktop에 등록**
+
+① 터미널(2번의 `naverblog-mcp` 폴더)에서 두 값을 확인합니다.
 
 ```bash
-uv run python - <<EOF
-import json, pathlib
-p = pathlib.Path.home() / "Library/Application Support/Claude/claude_desktop_config.json"
-cfg = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}
-cfg.setdefault("mcpServers", {})["naver-blog"] = {"command": "$(which uv)", "args": ["--directory", "$(pwd)", "run", "naver-blog-writer"]}
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-print("등록 완료:", p)
-EOF
+which uv    # 예: /opt/homebrew/bin/uv
+pwd         # 예: /Users/내이름/naverblog-mcp
 ```
 
-기존 설정(다른 MCP 서버 등)은 그대로 두고 `naver-blog`만 추가합니다.
+② Claude Desktop에서 **설정 → 개발자 → 구성 편집**을 누릅니다. Finder에 `claude_desktop_config.json`이 나타나면 마우스 오른쪽 버튼 → **다음으로 열기 → 텍스트 편집기**로 엽니다.
 
-**5. Claude Desktop 재시작**: `Cmd + Q`로 완전히 종료한 뒤 다시 실행
+③ 파일 내용을 아래로 바꿉니다. `command`에는 ①의 `which uv` 결과, `--directory` 다음에는 `pwd` 결과를 넣고 저장합니다.
+
+```json
+{
+  "mcpServers": {
+    "naver-blog": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["--directory", "/Users/내이름/naverblog-mcp", "run", "naver-blog-writer"]
+    }
+  }
+}
+```
+
+파일에 이미 다른 내용(다른 MCP 서버, `preferences` 등)이 있으면 지우지 말고, `mcpServers` 안에 `"naver-blog": { ... }` 부분만 추가합니다. 앞 항목과의 사이에는 쉼표(`,`)를 넣습니다. 따옴표는 직접 치지 말고 위 내용을 복사해 붙여 넣습니다(텍스트 편집기가 따옴표를 둥근 따옴표로 바꿀 수 있음).
+
+**5. Claude Desktop 재시작**: `Cmd + Q`로 완전히 종료한 뒤 다시 실행. **설정 → 개발자**에 `naver-blog`가 오류 없이 보이면 연결된 것입니다.
 
 **6. 네이버 로그인**: 새 대화에서 `네이버 로그인 창 열어줘` → 뜬 크롬 창에서 직접 로그인('로그인 상태 유지' 체크)
 
@@ -99,10 +109,10 @@ EOF
 **8. 글쓰기**: `11월 14일에 다녀온 젠스시 사진으로 써줘`
 
 <details>
-<summary>다른 설치 방법 (Windows, pip, 설정 파일 직접 편집, Chrome 없이)</summary>
+<summary>다른 설치 방법 (Windows, pip, `.env` 대신 설정에 값 넣기, Chrome 없이)</summary>
 
-- **Windows**: uv 설치는 PowerShell에서 `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`. `.env`는 메모장으로 만들고 `MEDIA_ROOTS=G:\내 드라이브\네이버블로그`처럼 씁니다. 설정 파일은 `%APPDATA%\Claude\claude_desktop_config.json`이고, 아래 JSON의 `env`에 `"PYTHONIOENCODING": "utf-8"`을 넣습니다.
-- **설정 파일 직접 편집**: Claude Desktop의 설정 → 개발자 → 구성 편집에서 `mcpServers` 안에 아래 항목을 추가합니다. `command`는 `which uv`(Windows `where uv`) 결과, `--directory`는 레포의 절대 경로입니다. `.env` 대신 `env`에 값을 넣을 수도 있고, 그러면 `env`가 우선합니다.
+- **Windows**: uv 설치는 PowerShell에서 `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`. `.env`는 메모장으로 만들고 `MEDIA_ROOTS=G:\내 드라이브\네이버블로그`처럼 씁니다. 구성 편집 방법은 같고(`command`는 `where uv` 결과, 경로의 `\`는 `\\`로), `env`에 `"PYTHONIOENCODING": "utf-8"`을 넣습니다.
+- **`.env` 대신 설정에 값 넣기**: 4단계 JSON의 `naver-blog` 안에 `env`를 추가합니다. `env`가 `.env`보다 우선합니다.
 
   ```json
   {
@@ -320,7 +330,7 @@ uvx ruff check src tests
 
 | 증상 | 해결 |
 |---|---|
-| Claude에 도구가 안 보임 | 레포 폴더에서 [빠른 시작](#빠른-시작-macos) 4단계를 다시 실행한 뒤 `Cmd + Q`로 재시작. 그래도 안 되면 로그 확인: macOS `~/Library/Logs/Claude`, Windows `%APPDATA%\Claude\logs` |
+| Claude에 도구가 안 보임 | [빠른 시작](#빠른-시작-macos) 4단계의 `command`(uv 경로), `--directory`(레포 경로), 쉼표와 따옴표를 확인한 뒤 `Cmd + Q`로 재시작. 그래도 안 되면 로그 확인: macOS `~/Library/Logs/Claude`, Windows `%APPDATA%\Claude\logs` |
 | 브라우저 창이 안 보임 | `HEADLESS=false`인지 확인. 로그인 전이면 글쓰기 단계가 바로 끝나므로 먼저 "네이버 로그인 창 열어줘"로 로그인 |
 | 브라우저 프로필 사용 중 | 로그인 창이나 진행 중인 작업 창을 닫고 다시 시도 |
 | 로그인이 자주 풀림 | 로그인할 때 '로그인 상태 유지' 체크, `BROWSER_CHANNEL`을 터미널과 Claude Desktop에서 같게 |
