@@ -5,7 +5,7 @@ import platform
 from mcp.types import ToolAnnotations
 
 from .. import config
-from ..core import blog_reader, history, media, style, trends
+from ..core import blog_reader, gemini_writer, history, media, style, trends
 from ..core.browser import browser_session, check_login
 
 ANNOTATIONS = ToolAnnotations(title="설치 점검", readOnlyHint=True, openWorldHint=True)
@@ -19,6 +19,11 @@ async def check_setup(check_browser: bool = True) -> dict:
         checks.append({"item": name, "ok": ok, "detail": detail})
 
     add("OS", True, f"{platform.system()} {platform.release()}, Python {platform.python_version()}")
+    if config.DRAFT_WRITER == "gemini":
+        try:
+            add("Gemini 문안 작성", True, f"{gemini_writer.executable()} ({config.AGY_MODEL}, 로그인은 터미널에서 확인)")
+        except ValueError as e:
+            add("Gemini 문안 작성", False, str(e))
     add("NAVER_BLOG_ID", bool(config.BLOG_ID), config.BLOG_ID or "비어 있음. 설정 env에 블로그 ID를 넣으세요.")
     if not config.MEDIA_ROOTS:
         add("MEDIA_ROOTS", False, "비어 있음. Google Drive의 블로그 사진 폴더 경로를 넣으세요.")

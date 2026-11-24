@@ -4,6 +4,7 @@ from mcp.types import ToolAnnotations
 
 from .. import config
 from ..core import place_reviews as core
+from ..core import writing_sources
 from ..core.browser import ProfileBusyError, browser_session
 
 ANNOTATIONS = ToolAnnotations(title="같은 장소 최신 리뷰 분석", readOnlyHint=True, openWorldHint=True)
@@ -24,10 +25,18 @@ async def place_reviews(place_id: str, place_name: str = "") -> dict | str:
         raise ValueError("place_id는 find_place 결과의 숫자 ID입니다(예: '1699893670').")
     try:
         async with browser_session() as (_ctx, page):
-            return await core.analyze_place(page, pid, place_name.strip())
+            summary = await core.analyze_place(page, pid, place_name.strip())
     except ProfileBusyError:
         raise
     except Exception as e:
         core.record_failure(pid, place_name.strip(), str(e))
-        return (f"FAILED: 같은 장소 리뷰를 읽지 못했습니다: {e}\n"
-                "실패 기록을 남겼으므로 write_post는 이 장소를 리뷰 비교 없이 저장합니다. 사용자에게 이 사실을 알리세요.")
+        message = (f"FAILED: 같은 장소 리뷰를 읽지 못했습니다: {e}\n"
+                   "실패 기록을 남겼으므로 write_post는 이 장소를 리뷰 비교 없이 저장합니다. 사용자에게 이 사실을 알리세요.")
+        ref = writing_sources.remember("reviews", {"place": {"place_id": pid, "name": place_name.strip()},
+                                                 "reviews_read": 0, "note": "리뷰 조회 실패. 이 장소의 리뷰는 근거로 쓰지 않습니다."})
+        return message + f"\nwriting_ref: {ref}"
+    # analyze_place의 공개 분석 결과만 사용. 로컬 겹침 검사용 본문 캐시는 조회하지 않습니다.
+    summary["writing_ref"] = writing_sources.remember("reviews", {k: summary[k] for k in (
+        "place", "reviews_read", "rules", "format_summary", "most_covered", "less_covered", "price_agreed_recent",
+        "impressions", "feeling_samples", "reviews", "listed", "note") if k in summary})
+    return summary

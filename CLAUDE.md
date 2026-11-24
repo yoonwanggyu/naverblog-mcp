@@ -14,6 +14,20 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 사용자는 화면에 뜬 크롬 창으로 최근 글 읽기, 경향 분석, 장소 검색, 같은 장소 리뷰 읽기, 로그인, 글 입력을 지켜본다. 브라우저는 이 서버가 Playwright로 직접 띄운다(별도 Playwright MCP를 쓰지 않는다).
 - 사진, 장소, 날짜와 함께 들어오는 글 요청은 '블로그'라는 말이 없어도 네이버 블로그 초안 요청이며 항상 스타일 가이드대로 쓴다.
 
+## 블로그 글쓰기: 메인 에이전트와 서브에이전트
+- **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지, Gemini 위임은 `generate_gemini_draft(packet_id)`를 사용한다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. 생성 실패 시 자동 재요청·저장하지 않는다.
+- **글쓰기 서브에이전트 — Gemini 4 Neon (High, 추론 높음)**: `DRAFT_WRITER=gemini`일 때 블로그 제목과 문안을 작성해 Claude에게 반환한다. 두 모델은 작성 지침(`core/writing_rules.py`)을 공유한다. Gemini는 참조로 연결된 같은 가이드(10절 내 글 예시 포함)·선택한 장소·공개 리뷰 분석을 사용하고, 겹침 검사용 본문 캐시는 읽지 않는다.
+- 설정은 `DRAFT_WRITER`(기본 `claude`), `AGY_PATH`, `AGY_MODEL`(코드 기본 `gemini-3.8-flash-medium`). 이 맥은 `.env`에서 `AGY_MODEL=gemini-4-neon-high`다. `agy acp`에서 지정 모델의 가용성을 확인하고 `session/set_model`로 고정한 뒤 같은 텍스트와 같은 JPEG 바이트를 순서대로 준다. 누락·한도 초과 시 중단하며 관찰 텍스트로 대체하지 않는다.
+- `agy acp`는 `--sandbox --disable-telemetry --include-default-customizations=false`와 임시 `--cli_dir_name`으로 띄우고 도구 권한 요청은 모두 거부한다. 생성 제한 250초. 응답 JSON(`{"title","parts":[{"slot","lines"}]}`)은 `gemini_writer`가 문안 자리와 대조해 블록으로 바꾼다.
+- 자료 모음(`writing_sources`)은 `get_style_guide`의 `writing_ref`마다 이미지 100장, 12MiB까지. `view_images`와 `extract_video_frames`는 `guide_ref`가 필수다. 같은 사진(경로)과 같은 영상 장면(경로+JPEG 해시)은 한 번만 담고 같은 V번호를 돌려준다. 더 크게 다시 본 사진은 그 자리의 JPEG만 큰 것으로 바꾼다. `visual_count`는 서로 다른 V번호 개수다.
+- 자료 묶음(`writing_packet`)은 텍스트 512KiB 이하, 경로와 URL 없음, `packet_id`는 sha256, 최근 4개를 1시간 메모리에 둔다. Gemini 생성 결과는 최근 1건만 메모리에 두고 재시작하면 사라진다.
+
+## 80초 응답 없음 문제와 접수·조회 구조
+- 원인: 실제 `write_post` 한 번이 브라우저 입력, 사진·영상 업로드, 저장 확인까지 붙잡아 Claude Desktop의 도구 대기 시간(약 80초)을 넘겼다. 동기 파일 작업(`_media_inputs`, `overlap_warnings`)이 이벤트 루프를 막아 진행 알림도 늦었다.
+- 해결: `write_post`는 검증 뒤 `core/draft_jobs.py`에 작업을 만들고 `job_id`를 1초 안에 돌려준다. 브라우저 작업은 서버 안의 백그라운드 작업이 한다. `draft_status(job_id, wait_seconds≤10)`는 조회만 한다. 무거운 동기 작업은 `asyncio.to_thread`.
+- 상태: `running` / `saved` / `unconfirmed`(저장 버튼을 누른 뒤 확인 못 함, 한도에 셈) / `failed` / `unknown`(재시작 전 진행 중이던 작업). 같은 요청(digest)은 같은 작업을 돌려주고, 진행 중에 다른 글은 거부한다. 이력은 작업 ID별로 원자적으로(임시 파일 + `os.replace`) 쓰고, 깨진 JSON은 빈 목록으로 덮지 않고 예외로 멈춘다.
+- Gemini 문안도 같은 방식이다: `generate_gemini_draft` → `generation_id`, `gemini_draft_status`로 `ready`/`failed` 조회.
+
 ## 사진 폴더 규칙
 - 루트는 `MEDIA_ROOTS`(예: `~/Library/CloudStorage/GoogleDrive-<이메일>/내 드라이브/블로그사진`).
 - 글 1편 = 폴더 1개. 이름에 장소명과 날짜가 있으면 형식은 자유다(`젠스시(26.11.14)`, `2026-11-15_성수데이트`, `놀숲 11.17` 등). 날짜가 없으면 첫 사진의 EXIF 촬영일을 쓴다.
@@ -42,6 +56,7 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 사진 속 음식의 이름과 설명도 본문에 쓰지 않고 fill로 넣는다(추천 문구에 정식 메뉴명). 제목에 음식 이름을 넣지 않는다. 글 끝은 `quote` 블록(말풍선, 포스트잇, 프레임)이다.
 - 주관 평가(맛, 외관 후기, 분위기, 느낀 점, 추천)는 쓰지 않고 `fill` 블록으로 `[이 부분에 직접 입력하시기 바랍니다]`(`formatting.PLACEHOLDER`)와 그 아래 `(추천 문구)` 줄 2~3개를 넣는다. 추천 문구는 사용자가 고르는 예시이고 사실로 쓰지 않는다. 사용자 메모의 평가만 `text`로 그대로 쓴다.
 - 저장은 완료 신호(알림, 저장 글 수, 저장 응답)를 확인한 뒤에만 성공으로 보고한다. 미확인 저장도 하루 한도와 중복 방지에 센다.
+- 실제 `write_post`는 서버 안에서 작업 하나를 시작하고 접수 ID를 즉시 반환한다(`dry_run`은 기존처럼 점검 결과 반환). `draft_status(job_id, wait_seconds=10)`로 조회만 반복하고 `saved`일 때만 저장을 보고한다. 응답을 놓치면 `draft_status()`로 최근 작업을 찾는다. 서버 재시작 뒤에는 이력에서 확인 가능한 결과만 보여 주며 자동 재시도하지 않는다.
 - 실계정 테스트는 임시저장까지만, 하루 1~2건만 한다. `~/.naver-blog-writer/browser-profile`은 읽거나 커밋하지 않는다.
 
 ## 기술 스택
@@ -58,12 +73,14 @@ uv run python tests/folders_test.py                        # 폴더 찾기(날�
 BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰(감상 줄 포함), 최신 경향, 다른 블로그 끄기 31항목
 uv run python tests/archive_test.py                        # 겹침 경고 10항목
 uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 이모지, 내 글 링크, 개인 규칙 파일 점검 40항목
+BROWSER_CHANNEL=chrome uv run python tests/draft_job_test.py     # stdio MCP 접수·조회·중복·재시작 (NBW_TEST_SAVE_DELAY_S=81로 장시간 재현)
+uv run python tests/gemini_writer_test.py                       # 가짜 agy로 문안 생성·회수·실패 및 dry_run, 외부 전송 없음
 uvx ruff check src tests
 uv run naver-blog-writer                                   # 서버 직접 실행 (보통은 Claude Desktop이 실행)
 uv run mcp dev src/naver_blog_writer/server.py             # MCP Inspector (Node 필요)
 uv run naver-blog-login                                    # 터미널 로그인 도우미
 ```
-코드를 바꾼 뒤에는 ruff와 다섯 테스트를 통과시킨 다음 보고한다.
+코드를 바꾼 뒤에는 ruff와 일곱 테스트를 통과시킨 다음 보고한다. 실제 Gemini 이미지 입력 확인은 선택: `uv run python tests/gemini_image_live_test.py --live`(계정 한도 사용, 네이버 저장 없음).
 
 ## 폴더 구조
 ```
@@ -77,7 +94,9 @@ src/naver_blog_writer/
 │   ├── __init__.py       # TOOLS 목록(노출 순서)과 register_all()
 │   ├── get_style_guide.py  recent_posts.py  list_folders.py  scan_media.py  view_images.py
 │   ├── extract_video_frames.py  find_place.py  place_reviews.py  load_research.py  save_research.py
-│   ├── write_post.py     # Block 모델, 정리, lint, 한도, 입력, 검증, 임시저장
+│   ├── prepare_writing_packet.py  read_writing_packet.py   # 집필 자료 묶음 확정, 페이지 읽기(두 작성자 공통)
+│   ├── generate_gemini_draft.py  gemini_draft_status.py    # Gemini 문안 생성 접수와 조회
+│   ├── write_post.py  draft_status.py   # 접수, 입력, 검증, 저장 및 읽기 전용 상태 조회
 │   └── my_post_links.py  refresh_trends.py  check_setup.py  login_status.py  open_login_window.py  inspect_editor.py
 ├── prompts/              # MCP 프롬프트(+ 메뉴의 /write, /research). 파일명 = 프롬프트명
 │   ├── write.py          # 입력 모두 선택: 폴더 또는 주제, 제목, 큰 틀, 메모
@@ -94,6 +113,12 @@ src/naver_blog_writer/
     ├── formatting.py     # 한 줄 한 호흡 정리, fill 렌더링, lint(말투 점검 포함)
     ├── archive.py        # 최근 글 5개 기록과 겹침 경고 (블로그 사이트를 읽지 않음)
     ├── style.py  notes.py  history.py
+    ├── draft_jobs.py     # 임시저장 작업 접수, 진행 단계, 결과, 재시작 뒤 상태
+    ├── writing_rules.py  # PRIORITIES, COPY_RULES, GEMINI_HANDOFF (server INSTRUCTIONS, prompts/write.py, Gemini 공용)
+    ├── writing_sources.py  # writing_ref별 자료 모음과 미리보기 JPEG
+    ├── writing_packet.py   # Brief 검증, 묶음 고정(packet_id), 페이지 읽기
+    ├── agy_acp.py        # agy acp stdio JSON-RPC 클라이언트(모델 확인, set_model, 도구 거부)
+    ├── gemini_writer.py  # 생성 작업 1건 관리, 응답 JSON 검증과 블록 변환
 tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
 ```
 
@@ -102,7 +127,7 @@ tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모�
 - docstring이 Claude가 보는 도구 설명이다. 한국어로 언제 쓰는지와 주의점을 2~5줄로 쓴다.
 - 입력 검증 실패는 예외로 던진다. 브라우저 작업 실패는 `FAILED ...` 텍스트로 반환한다.
 - 이미지는 `mcp.server.fastmcp.Image`로 반환하고 한 번에 최대 10장, 긴 변 1024px 기본.
-- 작업 순서(스타일 가이드와 최근 글과 최신 경향, 폴더 찾기와 확인, 스캔, 보기, 장소 찾기, 같은 장소 리뷰, 요청 시 내 글 링크, dry_run, 임시저장)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
+- 작업 순서(스타일 가이드와 최근 글과 최신 경향 → `writing_ref`, 폴더 찾기와 확인, 스캔, 보기(`guide_ref`), 장소 찾기, 같은 장소 리뷰, 요청 시 내 글 링크, `prepare_writing_packet`, 작성자별 `read_writing_packet` 또는 `generate_gemini_draft`→`gemini_draft_status`, 사실 대조와 조립, dry_run, 임시저장 접수→`draft_status`)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
 - 파일, 이미지, ffmpeg처럼 오래 걸리는 동기 작업은 `asyncio.to_thread`로 돌린다. 오래 걸리는 도구는 `ctx.report_progress`로 진행 상황을 보낸다.
 - 사용자를 기다리는 도구(로그인)는 호출을 붙잡지 않는다. 창을 띄우고 바로 돌아온 뒤 상태 도구로 확인한다.
 

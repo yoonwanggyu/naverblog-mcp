@@ -1,15 +1,16 @@
 """scan_media: 폴더의 사진과 영상 목록과 메타데이터."""
 
 import asyncio
+from pathlib import Path
 
 from mcp.types import ToolAnnotations
 
-from ..core import folders, media
+from ..core import folders, media, writing_sources
 
 ANNOTATIONS = ToolAnnotations(title="사진 폴더 스캔", readOnlyHint=True, openWorldHint=False)
 
 
-async def scan_media(folder: str, recursive: bool = True, user_confirmed: bool = False) -> dict:
+async def scan_media(folder: str, recursive: bool = True, user_confirmed: bool = False, guide_ref: str | None = None) -> dict:
     """폴더의 사진과 동영상을 촬영 시각 순으로 돌려줍니다(order 1부터). 촬영 시각, GPS, 해상도, 영상 길이, 기기를 포함합니다.
 
     두 사람이 같은 폴더에 각자 사진을 올리므로 파일 이름이 아니라 촬영 시각으로 섞어 정렬합니다. 글에도 이 order 순서대로 넣습니다.
@@ -27,6 +28,13 @@ async def scan_media(folder: str, recursive: bool = True, user_confirmed: bool =
         raise PermissionError("이 폴더는 사용자 확인이 필요합니다. 아래 질문을 사용자에게 그대로 보여 주고 답을 받으세요.\n\n" + question)
     folders.mark_confirmed(p)
     items = await asyncio.to_thread(media.scan_folder, p, recursive)
+    if guide_ref:
+        if len(items) > 300:
+            raise ValueError("스캔 결과가 300개를 넘습니다. 일부 자료로 원고를 만들지 말고 폴더 범위를 줄여 주세요.")
+        source = writing_sources.collection(guide_ref)
+        for i in items:
+            i["asset"] = source.asset(Path(i["path"]))
+        source.evidence.append({"kind": "scan", "items": [{k: i[k] for k in ("asset", "kind", "order", "taken_at", "time_source", "duration_sec", "width", "height") if k in i} for i in items]})
     devices: dict[str, int] = {}
     for i in items:
         key = i.get("camera") or "알 수 없음"

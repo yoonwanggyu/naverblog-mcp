@@ -11,12 +11,12 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from mcp.server.fastmcp import Context, Image
+from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, model_validator
 
 from .. import config
-from ..core import archive, blog_reader, editor, formatting, history, media, place_reviews
+from ..core import archive, blog_reader, draft_jobs, editor, formatting, history, media, place_reviews
 from ..core.browser import NotLoggedInError, browser_session
 
 log = logging.getLogger(__name__)
@@ -141,6 +141,37 @@ async def _progress(ctx: Context | None, done: int, total: int, message: str) ->
         pass
 
 
+def _media_inputs(blocks: list[Block]) -> tuple[dict[int, Path], dict[int, Path]]:
+    uploads: dict[int, Path] = {}
+    videos: dict[int, Path] = {}
+    for i, b in enumerate(blocks):
+        if b.type not in ("image", "video"):
+            continue
+        src = media.check_allowed(b.path or "")
+        ext = src.suffix.lower()
+        if b.type == "image":
+            if ext in media.VIDEO_EXT:
+                raise ValueError(f"영상은 image가 아니라 video 블록으로 넣습니다(또는 extract_video_frames 장면을 image로): {src}")
+            if ext not in media.IMAGE_EXT:
+                raise ValueError(f"지원하지 않는 이미지 형식입니다: {src}")
+            uploads[i] = src
+        else:
+            if ext not in media.VIDEO_EXT:
+                raise ValueError(f"video 블록에는 영상 파일만 넣습니다: {src}")
+            siblings = sorted(p.name for p in src.parent.iterdir() if p.suffix.lower() in media.VIDEO_EXT and not p.name.startswith("."))
+            if len(siblings) > 1 and not b.user_selected:
+                raise ValueError(f"폴더에 영상이 {len(siblings)}개 있습니다: {siblings}. 사용자에게 먼저 물어보고 "
+                                 "고른 영상만 user_selected=true로 넣으세요.")
+            videos[i] = src
+    if len(uploads) > config.MAX_IMAGES_PER_POST:
+        raise ValueError(f"이미지가 {len(uploads)}장입니다. 최대 {config.MAX_IMAGES_PER_POST}장까지 허용합니다.")
+    if len(set(uploads.values())) != len(uploads):
+        raise ValueError("같은 사진이 두 번 이상 들어 있습니다. 사진 재사용은 유사문서 위험이 있습니다.")
+    if len(set(videos.values())) != len(videos):
+        raise ValueError("같은 영상이 두 번 이상 들어 있습니다.")
+    return uploads, videos
+
+
 async def write_post(
     title: str,
     blocks: list[Block],
@@ -174,47 +205,54 @@ async def write_post(
     - main_keyword, hook_pattern(도입 유형): 최근 글과 겹치는지 비교하는 데 쓰고, 기록에도 남깁니다. 항상 채웁니다.
     - dry_run=true: 브라우저 없이 정리 결과와 경고(lint, 겹침)만 돌려줍니다. 먼저 한 번 호출하세요.
     - 검증은 저장 직전 텍스트 대조 1회입니다. 불일치가 있어도 저장하고 보고만 합니다. 재시도는 사용자에게 먼저 묻습니다.
-    - 브라우저 창이 화면에 보이며 사용자가 입력 과정을 지켜봅니다. review_seconds: 저장 후 창을 열어 두는 시간(초).
+    - 실제 저장은 접수 즉시 job_id를 반환합니다(성공 아님). draft_status(job_id, wait_seconds=10)로 완료까지 조회하세요.
+      응답을 놓쳤으면 write_post를 다시 호출하지 말고 draft_status()로 확인합니다. review_seconds는 저장 후 창을 열어 두는 시간입니다.
     """
     title = formatting.clean_line(title)
     if not title:
         raise ValueError("제목이 비어 있습니다.")
     if not blocks:
         raise ValueError("본문 블록이 비어 있습니다.")
+    digest = _digest(title, blocks)
+    if not dry_run:
+        active = draft_jobs.running(digest)
+        if active:
+            return [json.dumps(active.snapshot(), ensure_ascii=False)]
     _require_recent_style_sync()
     place_notes = _require_place_reviews(blocks)
 
-    # 이미지 검증과 변환 (GPS 제거, HEIC 변환은 시간이 걸리므로 별도 스레드에서)
-    uploads: dict[int, Path] = {}
-    for i, b in enumerate(blocks):
-        if b.type != "image":
-            continue
-        src = media.check_allowed(b.path or "")
-        ext = src.suffix.lower()
-        if ext in media.VIDEO_EXT:
-            raise ValueError(f"영상은 image가 아니라 video 블록으로 넣습니다(또는 extract_video_frames 장면을 image로): {src}")
-        if ext not in media.IMAGE_EXT:
-            raise ValueError(f"지원하지 않는 이미지 형식입니다: {src}")
-        uploads[i] = src
-    if len(uploads) > config.MAX_IMAGES_PER_POST:
-        raise ValueError(f"이미지가 {len(uploads)}장입니다. 최대 {config.MAX_IMAGES_PER_POST}장까지 허용합니다.")
-    if len({str(p) for p in uploads.values()}) != len(uploads):
-        raise ValueError("같은 사진이 두 번 이상 들어 있습니다. 사진 재사용은 유사문서 위험이 있습니다.")
-    videos: dict[int, Path] = {}
-    for i, b in enumerate(blocks):
-        if b.type != "video":
-            continue
-        src = media.check_allowed(b.path or "")
-        if src.suffix.lower() not in media.VIDEO_EXT:
-            raise ValueError(f"video 블록에는 영상 파일만 넣습니다: {src}")
-        siblings = sorted(p.name for p in src.parent.iterdir() if p.suffix.lower() in media.VIDEO_EXT and not p.name.startswith("."))
-        if len(siblings) > 1 and not b.user_selected:
-            raise ValueError(
-                f"폴더에 영상이 {len(siblings)}개 있습니다: {siblings}. 어떤 영상을 글에 넣을지 사용자에게 먼저 물어보고, "
-                "사용자가 고른 영상만 user_selected=true로 넣으세요.")
-        videos[i] = src
-    if len({str(p) for p in videos.values()}) != len(videos):
-        raise ValueError("같은 영상이 두 번 이상 들어 있습니다.")
+    args = (title, blocks, tags, main_keyword, hook_pattern, sponsored, review_seconds, place_notes)
+    if dry_run:
+        await _progress(ctx, 0, 1, "미디어와 문구 점검")
+        plan = await _process(*args, job=None)
+        await _progress(ctx, 1, 1, "점검 완료")
+        return ["검증 통과 (dry_run, 브라우저는 열지 않았습니다). lint_warnings와 overlap_warnings를 확인하고 고치세요.",
+                json.dumps(plan, ensure_ascii=False, indent=1)]
+
+    used = history.drafts_today()
+    if used >= config.DAILY_DRAFT_LIMIT:
+        raise RuntimeError(f"오늘 임시저장 {used}건으로 하루 한도({config.DAILY_DRAFT_LIMIT}건)에 도달했습니다.")
+    dup = history.recent_duplicate(digest)
+    if dup and not force:
+        raise RuntimeError(f"{dup['time']}에 같은 내용을 이미 임시저장했거나 저장 미확인입니다. "
+                           "네이버 '저장' 목록 확인 후 정말 다시 하려면 force=true로 호출하세요.")
+
+    async def work(job: draft_jobs.DraftJob) -> None:
+        await _process(*args, job=job)
+
+    # 중복/한도 확인부터 작업 등록까지 await가 없어 동시 호출에도 두 번 접수되지 않습니다.
+    job = draft_jobs.start(title, digest, work)
+    return [json.dumps({**job.snapshot(), "message": "임시저장 작업을 접수했습니다. 아직 저장 성공이 아닙니다. "
+                        "draft_status(job_id, wait_seconds=10)로 확인하세요."}, ensure_ascii=False)]
+
+
+async def _process(title: str, blocks: list[Block], tags: list[str] | None, main_keyword: str | None,
+                   hook_pattern: OpeningType | None, sponsored: str | None, review_seconds: int,
+                   place_notes: list[str], job: draft_jobs.DraftJob | None) -> dict | None:
+    total = len(blocks) + 4
+    if job:
+        job.progress(0, total, "미디어 준비")
+    uploads, videos = await asyncio.to_thread(_media_inputs, blocks)
     media_in_order = [(uploads.get(i) or videos[i]) for i in sorted(set(uploads) | set(videos))]
     order_warnings = await asyncio.to_thread(_photo_order_warnings, media_in_order)
     for i, src in list(uploads.items()):
@@ -238,9 +276,8 @@ async def write_post(
     )
     # 추천 문구도 다른 사람 리뷰 문장을 그대로 옮기지 않았는지 겹침 검사에 넣습니다(저장 기록에는 본문만 남김).
     suggestion_text = "\n".join(s for b in blocks if b.type == "fill" for s in (b.suggestions or []))
-    overlaps = archive.overlap_warnings(title, main_keyword, hook_pattern, subtitles, body_text + "\n" + suggestion_text)
+    overlaps = await asyncio.to_thread(archive.overlap_warnings, title, main_keyword, hook_pattern, subtitles, body_text + "\n" + suggestion_text)
 
-    digest = _digest(title, blocks)
     plan = {
         "title": title,
         "sponsored": sponsored,
@@ -266,30 +303,18 @@ async def write_post(
         "overlap_warnings": overlaps,
         "place_review_notes": place_notes,
     }
-    if dry_run:
-        return ["검증 통과 (dry_run, 브라우저는 열지 않았습니다). lint_warnings와 overlap_warnings를 확인하고 고치세요.",
-                json.dumps(plan, ensure_ascii=False, indent=1)]
-
-    used = history.drafts_today()
-    if used >= config.DAILY_DRAFT_LIMIT:
-        raise RuntimeError(
-            f"오늘 임시저장 {used}건으로 하루 한도({config.DAILY_DRAFT_LIMIT}건)에 도달했습니다. "
-            "자동화는 하루 1~2건을 권장합니다. 꼭 필요하면 사용자가 DAILY_DRAFT_LIMIT 설정을 직접 바꿔야 합니다."
-        )
-    dup = history.recent_duplicate(digest)
-    if dup and not force:
-        raise RuntimeError(f"{dup['time']}에 같은 내용을 이미 임시저장했습니다. 정말 다시 하려면 사용자 확인 후 force=true로 호출하세요.")
+    if job is None:
+        return plan
 
     notes: list[str] = list(place_notes)
     expected: list[str] = [title]
     counts = {"image": 0, "video": 0, "subtitle": 0, "divider": 0, "place": 0, "link": 0}
     layout: list[str] = []
-    total = len(blocks) + 4
 
     async with browser_session() as (_ctx, page):
         step = "글쓰기 페이지 열기"
         try:
-            await _progress(ctx, 0, total, step)
+            job.progress(0, total, step)
             frame = await editor.open_editor(page)
             if any("작성 중인" in c for c in editor.LAST_OPEN_CLOSED):
                 notes.append("글쓰기 화면에 저장하지 않고 편집하다 만 내용이 있다는 창이 떠서 '취소'를 누르고 새 글로 시작했습니다. "
@@ -307,7 +332,7 @@ async def write_post(
             for idx, b in enumerate(blocks):
                 step = f"{idx + 1}번 블록({b.type})"
                 log.info("write_post: %s", step)
-                await _progress(ctx, idx + 1, total, f"{step} 입력 중")
+                job.progress(idx + 1, total, f"{step} 입력 중")
                 await editor.dismiss_popups(frame)
                 if prev in NON_TEXT or prev == "link":
                     await editor.move_to_end(frame)
@@ -369,11 +394,12 @@ async def write_post(
                 await editor.write_hashtags(frame, tags)
                 layout.append("text")  # 태그는 본문 끝 문단으로 들어갑니다(마무리 상자 뒤에 오면 별도 문단)
             step = "텍스트 검증"
-            await _progress(ctx, total - 2, total, step)
+            job.progress(total - 2, total, step)
             check = await editor.verify_text(frame, expected, counts, layout=layout)
             step = "임시저장"
-            await _progress(ctx, total - 1, total, step)
+            job.progress(total - 1, total, step)
             await editor.dismiss_popups(frame)
+            job.before_save()
             saved = await editor.save_draft(frame)
             if saved["confirmed"]:
                 result = {
@@ -400,37 +426,39 @@ async def write_post(
                                        f"[[확인필요]] {to_fill['확인필요']}곳을 확인해 고친 뒤 발행하세요.")
             if not check["ok"]:
                 result["next"] = "검증에서 불일치가 있습니다. 자동으로 다시 시도하지 않습니다. 사용자에게 결과를 보여 주고 재시도 여부를 물으세요."
-            history.append({"digest": digest, "title": title, "mode": "draft", "ok": saved["confirmed"],
-                            "unconfirmed": not saved["confirmed"]})
             if saved["confirmed"]:
-                archive.save({"title": title, "main_keyword": main_keyword, "hook_pattern": hook_pattern,
-                              "subtitles": subtitles, "tags": tags or [], "body": body_text})
+                try:
+                    archive.save({"title": title, "main_keyword": main_keyword, "hook_pattern": hook_pattern,
+                                  "subtitles": subtitles, "tags": tags or [], "body": body_text})
+                except OSError as e:
+                    notes.append(f"임시저장은 확인했지만 겹침 비교용 기록을 쓰지 못했습니다: {e}")
             if overlaps:
                 result["overlap_warnings"] = overlaps
-            await _progress(ctx, total, total, "완료")
+            job.progress(total, total, "저장 확인" if saved["confirmed"] else "저장 미확인")
+            job.finish("saved" if saved["confirmed"] else "unconfirmed", result)
             if review_seconds > 0:
                 await page.wait_for_timeout(min(review_seconds, 600) * 1000)
-            return [json.dumps(result, ensure_ascii=False, indent=1)]
         except NotLoggedInError as e:
-            return [f"FAILED: {e}"]
+            job.finish("failed", {"ok": False, "message": f"FAILED: {e}"})
         except editor.PublishBlockedError as e:
             log.error("발행 차단: %s", e)
-            return [f"FAILED at step '{step}': {e} 작업을 중단했습니다. 이 동작은 우회하지 마세요."]
+            job.finish("failed", {"ok": False, "message": f"FAILED at step '{step}': {e} 작업을 중단했습니다. 이 동작은 우회하지 마세요."})
         except Exception as e:
             log.exception("write_post 실패 (%s)", step)
+            if job.finished.is_set():  # 저장 확인 후 창을 일찍 닫아도 결과를 바꾸지 않습니다.
+                return None
             shot_path = config.ERROR_DIR / f"error_{time.strftime('%Y%m%d_%H%M%S')}.png"
             shot: bytes | None = None
             try:
                 shot = await page.screenshot(path=str(shot_path))
             except Exception:
                 shot_path = None  # type: ignore[assignment]
-            history.append({"digest": digest, "title": title, "mode": "draft", "ok": False, "step": step, "error": str(e)})
-            out: list = [
+            job.step = step
+            if shot and config.RETURN_ERROR_SCREENSHOT:
+                job.screenshot = shot
+            job.finish("unconfirmed" if job.save_attempted else "failed", {"ok": False, "saved_confirmed": False, "message":
                 f"FAILED at step '{step}': {e}\n"
                 f"스크린샷 파일: {shot_path}\n"
                 "같은 요청을 바로 반복하지 마세요. 에디터에 작성 중인 내용이 남았을 수 있으니 사용자가 확인해야 합니다. "
-                "셀렉터 문제로 보이면 inspect_editor로 진단하세요."
-            ]
-            if shot and config.RETURN_ERROR_SCREENSHOT:
-                out.append(Image(data=shot, format="png"))
-            return out
+                "셀렉터 문제로 보이면 inspect_editor로 진단하세요."})
+    return None

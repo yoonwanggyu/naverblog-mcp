@@ -12,30 +12,108 @@ Claude Desktop에 연결해서 "11월 14일에 다녀온 젠스시 사진으로 
 - 👀 브라우저 작업(내 글과 같은 장소 리뷰 읽기, 장소 검색, 글 입력)이 모두 화면에 보이는 크롬 창에서 진행됩니다.
 - 🧑‍🍳 네이버 맛집, 여행 상위 블로그 48편을 분석한 형식으로 씁니다: 한 줄 한 호흡, 가운데 정렬, 이모지 적극 사용, 짧은 소제목, 지도와 정보 줄은 글 앞쪽.
 - ✍️ 맛 평가, 메뉴 설명, 느낀 점은 비워 두고 `[이 부분에 직접 입력하시기 바랍니다]`와 고를 수 있는 추천 문구를 남깁니다.
+- 🤝 메인 에이전트는 Claude(자료 수집, 판단, 조립, 저장), 글을 쓰는 서브 에이전트는 선택입니다(`DRAFT_WRITER=claude` 기본, `gemini`로 바꾸면 Gemini가 제목과 문안만 씀). 두 작성자는 같은 집필 자료 묶음을 받습니다.
+- ⏱️ 저장처럼 오래 걸리는 작업은 접수 번호를 바로 돌려주고 짧게 나눠 조회합니다. Claude Desktop의 도구 대기 시간(약 80초)을 넘기지 않습니다.
 - 🛑 발행 버튼은 코드에서 막혀 있습니다. 결과물은 항상 임시저장입니다.
 
 <br>
 
 ## 동작 흐름
 
+**메인 에이전트 Claude**가 자료를 모으고 판단하고 조립합니다. **서브 에이전트 Gemini**는 글(제목과 문안)만 씁니다. 실제 파일, 브라우저, 네이버 작업은 모두 **로컬 MCP 서버**가 합니다.
+
+### 시스템 구성도
+
 ```mermaid
 flowchart LR
-    U(["💬 요청<br/>'11월 14일 젠스시<br/>사진으로 써줘'"]) --> S1
-    S1["① 스타일<br/>get_style_guide"] --> S2["② 폴더<br/>list_folders"]
-    S2 --> S3["③ 사진<br/>scan_media<br/>view_images"]
-    S3 --> S4["④ 장소<br/>find_place<br/>place_reviews"]
-    S4 --> S5["⑤ 점검<br/>write_post<br/>dry_run"]
-    S5 --> S6["⑥ 저장<br/>write_post"]
-    S6 --> P(["✍️ 직접 채우고<br/>발행"])
+    U(["👤 사용자"])
+    subgraph DESK["Claude Desktop"]
+        CL["🧠 메인 에이전트 · Claude<br/>검색 · 도구 호출 · 판단<br/>사실 대조 · 첨부 조립"]
+    end
+    subgraph SRV["🧰 로컬 MCP 서버 · naver-blog-writer"]
+        direction TB
+        T1["가이드 · 자료 도구<br/>가이드, 폴더, 사진, 장소, 리뷰"]
+        T2["집필 자료 묶음<br/>packet: 텍스트 + JPEG"]
+        T3["Gemini 연결<br/>agy acp, 도구 권한 없음"]
+        T4["저장 작업<br/>job: 백그라운드 입력과 저장"]
+    end
+    GM["✍️ 서브 에이전트<br/>Gemini 4 Neon High<br/>제목 · 문안만 작성"]
+    DRV[("📁 Google Drive<br/>사진 · 영상 폴더")]
+    NV[("🌐 네이버<br/>블로그 · 지도 · 플레이스")]
+    U <--> CL
+    CL <-->|"stdio MCP"| SRV
+    T1 --> DRV
+    T1 -->|"크롬 창"| NV
+    T2 --> T3
+    T3 <-->|"같은 텍스트 + 같은 JPEG<br/>↔ 제목 · 문안 JSON"| GM
+    T4 -->|"크롬 창, 임시저장만"| NV
     classDef user fill:#FFF4D6,stroke:#E0A800,color:#5C4400
-    classDef step fill:#E8F1FF,stroke:#3B82F6,color:#1E3A8A
-    class U,P user
-    class S1,S2,S3,S4,S5,S6 step
+    classDef claude fill:#E8F1FF,stroke:#3B82F6,color:#1E3A8A
+    classDef gemini fill:#F3E8FF,stroke:#9333EA,color:#581C87
+    classDef server fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef ext fill:#ECFDF5,stroke:#10B981,color:#064E3B
+    class U user
+    class CL claude
+    class GM gemini
+    class T1,T2,T3,T4 server
+    class DRV,NV ext
 ```
 
-| ① 스타일 | ② 폴더 | ③ 사진 | ④ 장소 | ⑤ 점검 | ⑥ 저장 |
-|:---:|:---:|:---:|:---:|:---:|:---:|
-| 내 글 5편<br>최신 경향<br>기본 가이드 | 날짜·이름으로<br>찾고 애매하면<br>"이게 맞습니까?" | 사진을 보고<br>순서 정하기 | 지도 위치<br>같은 장소<br>리뷰 10편 | 줄 정리<br>말투·겹침<br>점검 | 크롬 창에서<br>입력 후<br>임시저장 |
+### 세부 도구 흐름
+
+```mermaid
+flowchart TB
+    REQ(["👤 '11월 14일 젠스시 사진으로 써줘'"])
+    subgraph P1["① 가이드 준비 · Claude"]
+        A1["get_style_guide(topic)<br/>내 글 5편 + 최신 경향 + 기본 가이드<br/>→ writing_ref"]
+    end
+    subgraph P2["② 자료 수집 · Claude (모든 호출에 guide_ref)"]
+        B1["list_folders<br/>애매하면 '이게 맞습니까?'"] --> B2["scan_media<br/>촬영 시각순 · 영상 여러 개면 선택 질문"]
+        B2 --> B3["view_images · extract_video_frames<br/>본 JPEG를 이번 글 자료에 연결"]
+        B3 --> B4["find_place → place_reviews<br/>장소 ID · 같은 장소 리뷰 10편"]
+        B4 --> B5["load_research · my_post_links<br/>필요할 때만"]
+    end
+    subgraph P3["③ 집필 자료 확정 · Claude"]
+        C1["prepare_writing_packet(brief)<br/>요청 · 메모 · 정정 · 확인된 사실 · 문안 자리<br/>→ packet_id"]
+    end
+    subgraph P4["④ 문안 작성 (DRAFT_WRITER)"]
+        D0{"작성자"}
+        D1["🧠 Claude 직접<br/>read_writing_packet<br/>0쪽 텍스트 + 이미지 쪽 전부"]
+        D2["✍️ Gemini 위임<br/>generate_gemini_draft → generation_id<br/>gemini_draft_status → ready"]
+        D0 -->|claude| D1
+        D0 -->|gemini| D2
+    end
+    subgraph P5["⑤ 조립과 점검 · Claude"]
+        E1["사실 대조 · 사진/영상/지도/링크 자리 결합"] --> E2["write_post(dry_run)<br/>lint · 겹침 · 사진 순서"]
+    end
+    subgraph P6["⑥ 임시저장 · 백그라운드 작업"]
+        F1["write_post → job_id 즉시 반환"] --> F2["draft_status(job_id, 10초)<br/>running → saved"]
+    end
+    DONE(["👤 네이버 '저장' 목록에서<br/>직접 채우고 발행"])
+    REQ --> A1 --> B1
+    B5 --> C1 --> D0
+    D1 --> E1
+    D2 --> E1
+    E2 --> F1
+    F2 --> DONE
+    classDef user fill:#FFF4D6,stroke:#E0A800,color:#5C4400
+    classDef claude fill:#E8F1FF,stroke:#3B82F6,color:#1E3A8A
+    classDef gemini fill:#F3E8FF,stroke:#9333EA,color:#581C87
+    classDef job fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    class REQ,DONE user
+    class A1,B1,B2,B3,B4,B5,C1,D1,E1,E2 claude
+    class D2 gemini
+    class D0,F1,F2 job
+```
+
+| 누가 | 하는 일 | 하지 않는 일 |
+|---|---|---|
+| 🧠 Claude (메인) | 도구 호출 순서, 폴더와 장소 확인 질문, 자료 확정, 사실 대조, 사진·영상·지도·링크 조립, 점검과 저장 확인 | Gemini 모드에서 문안을 대신 쓰지 않음 |
+| ✍️ Gemini (서브) | 확정된 자료 묶음(Claude와 같은 텍스트, 같은 JPEG)으로 제목과 자리별 문안 작성 | 검색, 파일 읽기, 도구 호출, 저장, 재시도 |
+| 🧰 MCP 서버 | 파일 읽기, 축소 이미지, 네이버 지도·리뷰 읽기, 에디터 입력, 저장 작업과 상태 기록 | 이미지 인식, 발행 |
+
+- 오래 걸리는 두 작업(Gemini 문안 생성, 네이버 임시저장)은 **접수 → 조회**로 나눕니다. 도구 호출 하나가 길어져 Claude Desktop이 응답 없음으로 끊는 일을 막기 위해서입니다. 접수는 1초 안에 돌아오고, 조회는 한 번에 10초까지만 기다립니다.
+- `DRAFT_WRITER=claude`면 ④에서 Claude가 같은 자료 묶음을 읽고 직접 씁니다. 나머지 단계는 같습니다.
 
 <br>
 
@@ -175,6 +253,26 @@ cd naverblog-mcp && git pull && uv sync
 날짜나 이름이 정확히 맞지 않으면 폴더 이름, 날짜, 장소명을 보여 주며 "이게 맞습니까?"라고 묻고, 답을 들은 뒤에 진행합니다.
 제목이나 큰 틀을 정하고 싶으면 입력창의 `+` 메뉴에서 `/write`를, 가격이나 일정을 미리 조사하려면 `/research`를 고릅니다.
 
+### 문안만 Gemini에 맡기기 (선택)
+
+기본 작성자는 Claude입니다. Gemini를 쓰려면 **Antigravity CLI(`agy`)**를 설치하고 터미널에서 `agy`를 한 번 실행해 Google OAuth로 로그인합니다. macOS는 `brew install --cask antigravity-cli`, 다른 OS는 [공식 설치 안내](https://antigravity.google/docs/install/)를 따르세요. `agy models`로 쓸 수 있는 Gemini 모델을 확인합니다.
+
+`.env` 또는 Claude Desktop의 서버 `env`에 아래를 설정하고 Desktop을 완전히 종료 후 다시 여세요. `AGY_PATH`는 macOS `command -v agy`, Windows `where.exe agy` 결과를 씁니다.
+
+```dotenv
+DRAFT_WRITER=gemini
+AGY_PATH=/opt/homebrew/bin/agy
+AGY_MODEL=gemini-4-neon-high
+```
+
+`AGY_MODEL`을 비우면 코드 기본값 `gemini-3.8-flash-medium`을 씁니다. 개발 환경은 `gemini-4-neon-high`(추론 높음)로 확인했습니다. 지정한 모델이 `agy`의 목록에 없으면 다른 모델로 바꾸지 않고 실패로 알립니다.
+
+글 자료 수집과 도구 호출은 Claude가 합니다. 작성 직전 `prepare_writing_packet`에서 **공통 작성 지침·가이드(10절 내 글 본문 예시와 11절 개인 규칙 포함), 요청·메모·정정, 이번 장소·리뷰 분석, 사용한 리서치와 외부 검색 근거, 사진·영상 장면의 실제 JPEG 미리보기**를 확정합니다. 대화나 외부 검색에서만 확인한 내용은 Claude가 명시적으로 넣습니다. 두 작성자 모두 같은 묶음을 받으며, 글을 맡길 때 **본문 예시·개인 규칙과 미리보기 이미지 자체가 Google에 전달됩니다**. 원본 파일·로컬 경로·GPS 메타데이터·네이버 로그인 정보·타인 글 본문 캐시는 보내지 않습니다. `READ_OTHER_BLOGS=false`면 장소 리뷰·최신 경향도 제외합니다.
+
+Gemini는 `agy acp`의 지정 모델(`AGY_MODEL`)에서 한 번만 문안을 생성합니다. 텍스트만으로 대체하지 않습니다. 자료 묶음은 최근 4개, 최대 한 시간 메모리에 유지합니다. 글 하나당 JPEG 100장/12MiB, 텍스트 512KiB를 넘거나 확인한 이미지 수(`visual_count`)가 다르면 오류로 알립니다. 같은 사진을 다시 보면 묶음에는 한 번만 들어가고(같은 V번호) 한 장으로 셉니다. 더 크게 다시 봤으면 큰 미리보기로 바꿉니다. Claude가 검토하고 사진·지도를 조립해 기존 점검·저장을 진행합니다.
+
+`generate_gemini_draft`의 `generation_id`는 **글 생성** 접수 번호이고, `gemini_draft_status`의 `ready`는 문안만 완성됐다는 뜻입니다. 서버 메모리에 최근 생성 한 건을 두며 재시작하면 지워집니다. 네이버 임시저장 여부는 별도의 `draft_status`가 `saved`일 때만 확인됩니다. Gemini에 실패하면 자동 대체·저장하지 않습니다. 원래 방식으로 돌아가려면 `DRAFT_WRITER=claude`로 바꾸고 재시작하세요.
+
 ### 발행 전에 할 일
 
 1. 평소 쓰는 브라우저에서 네이버 글쓰기 화면의 '저장' 목록을 엽니다.
@@ -190,14 +288,17 @@ cd naverblog-mcp && git pull && uv sync
 
 | 도구 | 하는 일 |
 |---|---|
-| `get_style_guide` | 내 블로그 최근 글 5편으로 '내 스타일'을 만들고, 글 주제의 '최신 경향'(7일 지나면 다시 분석)과 기본 가이드를 합쳐 돌려줌. 글을 쓸 때마다 가장 먼저 호출 |
+| `get_style_guide` | 내 블로그 최근 글 5편으로 '내 스타일'을 만들고, 글 주제의 '최신 경향'(7일 지나면 다시 분석)과 기본 가이드를 합쳐 돌려줌. 글을 쓸 때마다 가장 먼저 호출. 이번 글의 자료 묶음 번호 `writing_ref`와 작성자 `draft_writer`도 돌려줌 |
 | `list_folders` | 말한 날짜와 장소로 사진 폴더 찾기. 날짜 형식 무관, 장소명 오타 허용, 애매하면 확인 질문 |
-| `scan_media` | 폴더의 사진과 영상을 촬영 시각순으로(두 사람이 올린 사진도 섞어서). 촬영 시각, 기기, GPS, 해상도, 영상 길이 |
-| `view_images` | 사진을 축소해 Claude가 직접 보게 함 (한 번에 10장, 응답 크기 자동 조절) |
-| `extract_video_frames` | 영상에서 장면을 뽑아 보여 줌(영상 내용 확인용, 원하면 사진처럼 사용) |
+| `scan_media` | 폴더의 사진과 영상을 촬영 시각순으로(두 사람이 올린 사진도 섞어서). 촬영 시각, 기기, GPS, 해상도, 영상 길이. `guide_ref`를 주면 순서와 메타데이터를 자료 묶음에 기록(경로와 GPS는 빼고) |
+| `view_images` | 사진을 축소해 Claude가 직접 보게 함 (한 번에 10장, 응답 크기 자동 조절). `guide_ref` 필수: 본 미리보기 JPEG가 그대로 집필 자료에 담김 |
+| `extract_video_frames` | 영상에서 장면을 뽑아 보여 줌(영상 내용 확인용, 원하면 사진처럼 사용). `guide_ref` 필수 |
 | `find_place` | 네이버 지도에서 장소 검색. 사진 GPS에서 가장 가까운 지점의 주소, 업종, 전화번호, 지도 블록(장소 ID 포함) |
 | `place_reviews` | 같은 장소에 지도를 첨부한 최신 블로그 리뷰 10편 분석: 형식, 많이 다룬 내용과 덜 다룬 내용, 2곳 이상 일치하는 가격 같은 사실 후보, 다른 방문자들이 자주 말한 장점과 아쉬움(추천 문구 재료). 장소 글이면 필수 |
 | `write_post` | 제목과 블록(글, 직접 입력 자리와 추천 문구, 소제목, 마무리 상자, 구분선, 사진, 동영상, 지도, 내 글 링크 카드)을 가운데 정렬로 입력하고 임시저장. 사진과 영상은 촬영 시각순. 저장 완료를 확인한 뒤 보고 |
+| `draft_status` | `write_post`가 반환한 `job_id`로 진행 단계와 결과 확인. ID 생략 시 최근 작업. `running`이면 같은 ID로 조회(`wait_seconds=10`), `saved`일 때만 저장 성공 |
+| `generate_gemini_draft` · `gemini_draft_status` | Gemini 모드에서 글감으로 문안 생성 접수 및 결과 조회. 브라우저와 저장 이력은 사용하지 않음 |
+| `prepare_writing_packet` · `read_writing_packet` | 집필 자료 확정, 페이지별 읽기(0쪽 공통 텍스트, 이후 순서대로 JPEG). 두 모드에서 같은 `packet_id` 사용 |
 | `my_post_links` | 내 블로그 글 목록(제목, 주소, 카테고리). 요청하면 글 끝에 다른 주제 글을 미리보기 카드로 넣을 때 사용 |
 | `recent_posts` | 겹침 비교 대상: 내 블로그 최근 글과 아직 발행 전인 임시저장 기록 |
 | `refresh_trends` | 네이버 주제별 인기글 15편으로 '최신 경향'을 바로 다시 만듦. 보통은 `get_style_guide`가 7일마다 자동으로 함 |
@@ -225,6 +326,8 @@ cd naverblog-mcp && git pull && uv sync
 | 겹침&nbsp;검사 | 최근 글과 제목, 키워드, 소제목, 도입과 마무리, 반복 문장이 겹치면 경고. 같은 장소의 다른 사람 리뷰와 거의 같은 문장은 한 문장부터 경고 |
 | 다른&nbsp;블로그 | 형식 수치와 짧은 정보 줄, 감상 줄(추천 문구 재료, 그대로 옮기면 경고)만 사용. 본문은 Claude에게 보내지 않고, 겹침 검사용 본문은 24시간 뒤 삭제. `READ_OTHER_BLOGS=false`로 끔 |
 | 저장&nbsp;확인 | 저장 완료 신호(알림, 저장 글 수, 저장 응답)를 확인한 뒤에만 성공으로 보고 |
+| 저장&nbsp;접수 | `write_post`는 접수 번호만 바로 돌려주고 `draft_status`로 조회. 같은 글은 같은 작업으로 묶고, 작업 중에 다른 글은 거부. 끊긴 저장은 `unconfirmed`로 남기고 자동 재시도 없음 |
+| Gemini&nbsp;전송 | `DRAFT_WRITER=gemini`일 때만, 확정한 집필 자료 묶음(텍스트와 미리보기 JPEG)만 보냄. 원본 파일, 경로, GPS, 쿠키, 다른 사람 글 본문 캐시는 보내지 않음. `agy`의 도구 사용은 모두 거부 |
 | 위치&nbsp;정보 | 업로드하는 사진과 영상에서 위치 정보 제거 (`STRIP_GPS`) |
 | 영상&nbsp;선택 | 폴더에 영상이 여러 개면 사용자가 고른 영상만 올림 |
 | 내&nbsp;글&nbsp;링크 | 요청할 때만, 내 블로그 글 주소만 허용(다른 사람 글 주소는 거부) |
@@ -288,6 +391,7 @@ cd naverblog-mcp && git pull && uv sync
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `NAVER_BLOG_ID` | (필수) | 블로그 ID |
+| `DRAFT_WRITER` / `AGY_PATH` / `AGY_MODEL` | `claude` / `agy` / `gemini-3.8-flash-medium` | 작성자(`claude`, `gemini`), Antigravity CLI 실행 파일, Gemini 모델 ID |
 | `MEDIA_ROOTS` | (필수) | 사진 폴더. 여러 개면 macOS `:`, Windows `;` |
 | `BROWSER_CHANNEL` | 비어 있음 | `chrome` 또는 `msedge`. 비우면 Playwright Chromium (`uv run playwright install chromium` 필요) |
 | `HEADLESS` | `false` | 브라우저 창 숨김. `true`면 장소 지도 첨부가 실패해 `📍 장소명` 자리 표시로 들어감 |
@@ -323,10 +427,14 @@ uv run python tests/folders_test.py                              # 폴더 찾기
 BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소 데이터, 내 스타일, 같은 장소 리뷰, 최신 경향
 uv run python tests/archive_test.py                              # 겹침 검사
 uv run python tests/formatting_test.py                           # 한 줄 한 호흡 정리, 추천 문구, 말투 점검
+BROWSER_CHANNEL=chrome uv run python tests/draft_job_test.py     # 실제 stdio 연결로 접수·상태 조회. NBW_TEST_SAVE_DELAY_S=81로 80초 초과 재현
+uv run python tests/gemini_writer_test.py                        # 로컬 가짜 agy: 생성→조회→dry_run
 uvx ruff check src tests
 ```
 
 <br>
+
+실제 모델의 이미지 입력은 별도 `uv run python tests/gemini_image_live_test.py --live`로 확인할 수 있습니다. `gemini-4-neon-high` 계정 한도를 사용하며, 가상 메뉴판 한 장에만 적힌 임의 표식을 원고에서 확인합니다. 개인 자료와 네이버 실저장은 사용하지 않습니다.
 
 ## 문제 해결
 
@@ -335,12 +443,14 @@ uvx ruff check src tests
 | Claude에 도구가 안 보임 | [빠른 시작](#빠른-시작-macos) 4단계의 `command`(uv 경로), `--directory`(레포 경로), 쉼표와 따옴표를 확인한 뒤 `Cmd + Q`로 재시작. 그래도 안 되면 로그 확인: macOS `~/Library/Logs/Claude`, Windows `%APPDATA%\Claude\logs` |
 | 브라우저 창이 안 보임 | `HEADLESS=false`인지 확인. 로그인 전이면 글쓰기 단계가 바로 끝나므로 먼저 "네이버 로그인 창 열어줘"로 로그인 |
 | 브라우저 프로필 사용 중 | 로그인 창이나 진행 중인 작업 창을 닫고 다시 시도 |
+| 응답이 늦거나 작업 ID를 못 받음 | “최근 임시저장 작업 상태를 확인해 줘”라고 요청(`draft_status()`). 제목이 맞는지 확인하고 `running`이면 조회만 반복합니다. 글을 다시 보내지 않습니다. 작업 중에는 Claude Desktop을 열어 두세요. 재시작 후에는 로컬 이력으로 확인하며, `unconfirmed` 또는 `unknown`이면 네이버 ‘저장’ 목록에서 직접 확인하세요. |
 | 로그인이 자주 풀림 | 로그인할 때 '로그인 상태 유지' 체크, `BROWSER_CHANNEL`을 터미널과 Claude Desktop에서 같게 |
 | 폴더를 못 찾음 | Drive 동기화가 끝났는지, `MEDIA_ROOTS`가 맞는지 확인. 스트리밍 모드면 폴더를 '오프라인 사용 가능'으로 |
 | `saved_confirmed: false` | 네이버 '저장' 목록에서 직접 확인. 저장됐다면 `inspect_editor` 결과로 `SAVE_TOAST`, `SAVE_RESPONSE_URL` 수정 |
 | `FAILED`와 스크린샷 | 같은 요청을 반복하지 말고 `~/.naver-blog-writer/errors`의 스크린샷 확인 후 `inspect_editor`로 진단 |
 | "작성 중인 글이 있습니다" 창 | 저장하지 않고 편집하다 만 내용이 있으면 뜸. 서버가 창이 뜰 때까지 기다렸다가 '취소'를 눌러 새 글로 시작하고 결과 `notes`에 알림. '저장' 목록의 임시저장 글은 그대로 남고 새 글은 따로 저장됨 |
 | 한글이 빠짐 | `TYPING_MODE=type` |
+| Gemini 문안 `failed` | `check_setup`으로 `agy` 경로와 로그인 확인, `agy models`에 `AGY_MODEL`이 있는지 확인. 자동으로 다시 요청하지 않으므로 원인을 고친 뒤 새로 요청하거나 `DRAFT_WRITER=claude`로 되돌림 |
 
 <br>
 
@@ -360,6 +470,7 @@ uvx ruff check src tests
 - 다른 사람 블로그를 읽고 싶지 않으면 `.env`에 `READ_OTHER_BLOGS=false`를 넣습니다. 그러면 내 글 5편과 기본 가이드만으로 씁니다.
 - 자동화된 읽기와 임시저장은 네이버 이용약관상 회색 지대일 수 있습니다. 개인 용도로 적은 양만 쓰고, 이용 책임은 사용자에게 있습니다.
 - 장소 검색은 사진의 GPS 좌표를 네이버 지도 검색의 중심 위치로 사용합니다. 업로드하는 사진에서는 GPS를 지웁니다.
+- `DRAFT_WRITER=gemini`면 집필 자료 묶음(가이드의 10절 내 글 예시와 11절 개인 규칙, 요청과 메모, 장소와 리뷰 분석 요약, 사진과 영상 장면의 미리보기 JPEG)이 Antigravity CLI를 거쳐 Google에 전달됩니다. 원치 않으면 기본값 `claude`로 둡니다.
 - 네이버 글쓰기 API는 종료되어 브라우저 자동화 방식만 가능합니다.
 - 네이버 운영정책은 허락 없는 자동화로 기계적인 글을 반복 게시하는 행위를 이용제한 사유로 봅니다. 사람이 검토하고 발행하는 방식을 유지하세요.
 
@@ -373,7 +484,7 @@ naverblog-mcp/
 │   ├── server.py              # MCP 서버 생성, 작업 순서와 판단 기준 안내, 도구 등록
 │   ├── config.py              # 환경 변수와 .env 설정
 │   ├── login_cli.py           # 터미널 로그인 도우미
-│   ├── tools/                 # MCP 도구 (파일 1개 = 도구 1개, 17개)
+│   ├── tools/                 # MCP 도구 (파일 1개 = 도구 1개, 22개)
 │   ├── prompts/               # /write, /research
 │   └── core/
 │       ├── dates.py  folders.py          # 날짜 해석, 폴더 찾기와 확인 질문
@@ -384,6 +495,11 @@ naverblog-mcp/
 │       ├── place_reviews.py  trends.py   # 같은 장소 리뷰(24시간), 주제별 경향(7일)
 │       ├── browser.py  editor.py  selectors.py   # 브라우저, 발행 차단, SmartEditor 조작
 │       ├── formatting.py                 # 줄 정리, 점검(lint), 직접 입력 자리와 추천 문구
+│       ├── draft_jobs.py                 # 임시저장 접수·진행·결과 (write_post → draft_status)
+│       ├── writing_rules.py              # Claude와 Gemini가 공유하는 판단 순서·작성 지침
+│       ├── writing_sources.py            # 가이드별 자료 모음(writing_ref, 미리보기 JPEG)
+│       ├── writing_packet.py             # 집필 자료 묶음 확정(packet_id), 페이지 읽기
+│       ├── agy_acp.py  gemini_writer.py  # agy acp 연결, Gemini 문안 생성과 검증
 │       └── archive.py  history.py  notes.py  style.py
 ├── style/default.md           # 기본 글쓰기 스타일 가이드
 ├── style/style_guide.md       # 개인 고정 규칙 (비어 있는 틀, 직접 채움)

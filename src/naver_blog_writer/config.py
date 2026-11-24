@@ -61,6 +61,13 @@ def _load_dotenv(path: Path) -> None:
 
 _load_dotenv(REPO_ROOT / ".env")
 
+# Gemini는 명시적으로 켠 설치에서만 글감을 외부로 보냅니다. Desktop은 터미널과 PATH가 다를 수 있습니다.
+DRAFT_WRITER = os.environ.get("DRAFT_WRITER", "claude").strip().lower()
+if DRAFT_WRITER not in {"claude", "gemini"}:
+    raise ValueError("DRAFT_WRITER는 claude 또는 gemini입니다.")
+AGY_PATH = os.environ.get("AGY_PATH", "agy").strip() or "agy"
+AGY_MODEL = os.environ.get("AGY_MODEL", "gemini-3.8-flash-medium").strip()
+
 # 서버가 쓰는 모든 파일(브라우저 프로필, 캐시, 로그)의 기준 폴더. 절대경로라서 cwd 영향을 받지 않습니다.
 HOME: Path = Path(os.environ.get("NBW_HOME", str(Path.home() / ".naver-blog-writer"))).expanduser().resolve()
 PROFILE_DIR: Path = HOME / "browser-profile"   # 로그인 쿠키. 외부에 공유하지 마세요.

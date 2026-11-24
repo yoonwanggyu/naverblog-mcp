@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from .. import config
@@ -12,7 +15,7 @@ from .. import config
 def _load() -> list[dict[str, Any]]:
     try:
         return json.loads(config.HISTORY_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except FileNotFoundError:
         return []
 
 
@@ -26,12 +29,27 @@ def recent_duplicate(digest: str) -> dict[str, Any] | None:
     return None
 
 
-def append(record: dict[str, Any]) -> None:
+def job_record(job_id: str | None) -> dict[str, Any] | None:
+    return next((r for r in reversed(_load()) if r.get("job_id") and (job_id is None or r["job_id"] == job_id)), None)
+
+
+def record_job(job_id: str, **fields: Any) -> None:
+    """접수 → 저장 시도 → 결과를 같은 행에 기록합니다. 저장 직전의 미확인 기록도 한도에 셉니다."""
     config.ensure_dirs()
     data = _load()
-    record = {"ts": time.time(), "time": time.strftime("%Y-%m-%d %H:%M:%S"), **record}
+    record = next((r for r in data if r.get("job_id") == job_id), {})
+    if record:
+        data.remove(record)
+    record.update(job_id=job_id, ts=time.time(), time=time.strftime("%Y-%m-%d %H:%M:%S"), **fields)
     data.append(record)
-    config.HISTORY_PATH.write_text(json.dumps(data[-300:], ensure_ascii=False, indent=1), encoding="utf-8")
+    # 쓰던 중 종료돼도 직전 이력(하루 한도와 중복 검사)이 남습니다.
+    tmp = tempfile.NamedTemporaryFile(dir=config.HOME, delete=False, mode="w", encoding="utf-8")
+    try:
+        with tmp as f:
+            json.dump(data[-300:], f, ensure_ascii=False, indent=1)
+        os.replace(tmp.name, config.HISTORY_PATH)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def drafts_today() -> int:

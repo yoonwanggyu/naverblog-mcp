@@ -249,3 +249,6 @@ server.log
 .idea/
 .claude/settings.local.json
 CLAUDE.local.md
+
+# 구현 전 조사 보고서 (로컬 전용)
+reports/

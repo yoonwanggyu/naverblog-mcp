@@ -50,10 +50,11 @@ threading.Thread(target=httpd.serve_forever, daemon=True).start()
 port = httpd.server_address[1]
 
 from naver_blog_writer import config  # noqa: E402
-from naver_blog_writer.core import blog_reader, editor, place_reviews  # noqa: E402
+from naver_blog_writer.core import blog_reader, draft_jobs, editor, place_reviews  # noqa: E402
 from naver_blog_writer.core import selectors as S  # noqa: E402
 from naver_blog_writer.core.browser import browser_session  # noqa: E402
 from naver_blog_writer.core.formatting import PLACEHOLDER  # noqa: E402
+from naver_blog_writer.tools.draft_status import draft_status  # noqa: E402
 from naver_blog_writer.tools.recent_posts import recent_posts  # noqa: E402
 from naver_blog_writer.tools.write_post import Block, write_post  # noqa: E402
 
@@ -79,12 +80,19 @@ async def save_wrap(frame, timeout_s=None):
 editor.save_draft = save_wrap
 
 
-class FakeCtx:
-    def __init__(self):
-        self.calls = []
-
-    async def report_progress(self, done, total, message=None):
-        self.calls.append((done, total, message))
+async def finish_draft(receipt: list) -> dict:
+    job_id = json.loads(receipt[0])["job_id"]
+    seen = set()
+    while True:
+        state = json.loads((await draft_status(job_id))[0])
+        seen.add(state["done"])
+        if state["status"] != "running":
+            break
+        await asyncio.sleep(0.1)
+    cap["progress"] = seen
+    # 결과는 창을 닫기 전에도 보입니다. 다음 독립 브라우저 테스트는 프로필 반환 후 시작합니다.
+    await draft_jobs._active
+    return state["result"]
 
 
 BLOCKS = [
@@ -156,9 +164,8 @@ async def main() -> int:
     check("겹침 비교 대상에 블로그 글 포함", any(c.startswith("블로그:") for c in plan["compared_with"])
           and any("소제목" in w for w in plan["overlap_warnings"]), str(plan["overlap_warnings"])[:90])
 
-    fake = FakeCtx()
-    r = await write_post(title=TITLE, blocks=BLOCKS, tags=TAGS, sponsored=SPONSOR, review_seconds=0, ctx=fake)
-    res = json.loads(r[0]) if r[0].startswith("{") else {"ok": False, "raw": r[0]}
+    r = await write_post(title=TITLE, blocks=BLOCKS, tags=TAGS, sponsored=SPONSOR, review_seconds=0)
+    res = await finish_draft(r)
     check("임시저장 성공(저장 확인됨)", res.get("ok") is True and res.get("saved_confirmed") is True,
           res.get("save_signal", "") if res.get("ok") else r[0][:300])
     check("텍스트 검증 1회 통과", res.get("verify", {}).get("ok") is True, json.dumps(res.get("verify"), ensure_ascii=False))
@@ -207,7 +214,8 @@ async def main() -> int:
     check("이모지가 섞인 문장 전체 입력", any("또 올 것 같아요 😊" in d.get("text", "") for d in doc))
     check("변형 선택자 이모지(✔️)가 섞인 굵은 줄 전체 입력", any("<b>✔ 팡도르 / 7,500원</b>" in p["html"] for p in paras)
           and any("다음엔 저녁도" in d.get("text", "") for d in doc), str([p["html"] for p in paras if "팡도르" in p["html"]]))
-    check("진행 상황 보고", len(fake.calls) >= len(BLOCKS) and fake.calls[-1][0] == fake.calls[-1][1], f"{len(fake.calls)}회")
+    check("상태 조회로 블록 진행과 완료 확인", any(0 < n <= len(BLOCKS) for n in cap["progress"])
+          and max(cap["progress"]) == len(BLOCKS) + 4)
 
     async with browser_session() as (_ctx, page):
         frame = await editor.open_editor(page)
@@ -223,7 +231,7 @@ async def main() -> int:
 
     r = await write_post(title="두 번째 글 테스트 제목입니다", blocks=[Block(type="text", text="두 번째 글입니다. 짧아요.")],
                          main_keyword="두 번째 글", hook_pattern="인사형", review_seconds=0)
-    check("두 번째 저장", r[0].startswith("{") and json.loads(r[0])["ok"], r[0][:80])
+    check("두 번째 저장", (await finish_draft(r))["ok"], r[0][:80])
     rec = await recent_posts()
     check("최근 글 기록(블로그 + 임시저장)", len(rec["blog_posts"]) == 1 and len(rec["drafts"]) == 2
           and rec["drafts"][0]["hook_pattern"] == "인사형", f"blog={len(rec['blog_posts'])} drafts={len(rec['drafts'])}")
@@ -235,7 +243,7 @@ async def main() -> int:
     config.SAVE_CONFIRM_TIMEOUT_S = 3
     r = await write_post(title="저장 실패 재현용 테스트 제목입니다", blocks=[Block(type="text", text="저장 신호가 없는 경우입니다.")],
                          review_seconds=0)
-    res = json.loads(r[0]) if r[0].startswith("{") else {}
+    res = await finish_draft(r)
     check("저장 미확인이면 성공으로 보고하지 않음", res.get("ok") is False and res.get("saved_confirmed") is False, res.get("save_signal", r[0][:80]))
     cap["no_save"] = False
     try:

@@ -3,7 +3,7 @@
 from mcp.types import ToolAnnotations
 
 from .. import config
-from ..core import blog_reader, style, trends
+from ..core import blog_reader, style, trends, writing_sources
 from ..core.browser import ProfileBusyError, browser_session
 from .refresh_trends import Topic
 
@@ -54,6 +54,8 @@ async def get_style_guide(topic: Topic = "맛집", refresh: bool = True) -> dict
     elif not config.BLOG_ID:
         sync = {"refreshed": False, "error": "NAVER_BLOG_ID가 없어 최근 게시물을 읽지 않았습니다."}
     out = style.load_style_guide(topic)
+    out["writing_ref"] = writing_sources.remember("guide", {"topic": topic, "guide": out["guide"], "read_other_blogs": config.READ_OTHER_BLOGS})
+    out["draft_writer"] = config.DRAFT_WRITER
     out["recent_posts_sync"] = sync
     out["trend_sync"] = trend
     return out

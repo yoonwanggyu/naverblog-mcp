@@ -2,12 +2,12 @@
 
 from mcp.types import ToolAnnotations
 
-from ..core import notes
+from ..core import notes, writing_sources
 
 ANNOTATIONS = ToolAnnotations(title="리서치 노트 불러오기", readOnlyHint=True, openWorldHint=False)
 
 
-async def load_research(query: str = "", read_first: bool = True) -> dict:
+async def load_research(query: str = "", read_first: bool = True, guide_ref: str | None = None) -> dict:
     """저장된 리서치 노트를 최신순으로 찾습니다. read_first=true면 가장 최근 노트 본문도 돌려줍니다.
 
     stale=true(30일 초과) 노트의 수치는 웹 검색으로 다시 확인한 뒤에 씁니다.
@@ -16,4 +16,8 @@ async def load_research(query: str = "", read_first: bool = True) -> dict:
     out: dict = {"matched": len(found), "notes": found}
     if read_first and found:
         out["content"] = notes.read(found[0]["path"])
+        if guide_ref:
+            source = writing_sources.collection(guide_ref)
+            source.evidence.append({"kind": "research", "name": found[0]["name"], "stale": found[0]["stale"],
+                                    "content": writing_sources.without_locations(out["content"])})
     return out

@@ -5,7 +5,7 @@ import re
 
 from mcp.types import ToolAnnotations
 
-from ..core import media, place
+from ..core import media, place, writing_sources
 from ..core.browser import browser_session
 
 ANNOTATIONS = ToolAnnotations(title="네이버 지도에서 장소 찾기", readOnlyHint=True, openWorldHint=True)
@@ -48,4 +48,5 @@ async def find_place(query: str, folder: str = "") -> dict:
         res["next"] = "위치를 확신할 수 없습니다. candidates를 사용자에게 보여 주고 어느 곳인지 확인받으세요."
     if not gps:
         res["note"] = "사진에 GPS 정보가 없어 지도 기본 위치(서울) 기준으로 검색했습니다."
+    writing_sources.attach_places(res)
     return res
