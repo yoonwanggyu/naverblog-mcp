@@ -31,4 +31,6 @@ GEMINI_HANDOFF = """작성자에 관계없이 글감 수집 때 scan_media, view
    작성자는 확정한 packet_id의 텍스트와 이미지 순서만 집필 근거로 씁니다. 누락을 발견하면 자료를 보완해 다시 확정합니다.
    claude 모드면 read_writing_packet(packet_id, page=0..pages-1)로 모든 쪽을 순서대로 읽고 직접 씁니다.
    gemini 모드면 generate_gemini_draft(packet_id)에 맡기고 gemini_draft_status(generation_id, wait_seconds=10)로 조회만 반복합니다.
-   ready이면 사실을 대조하고 원래 자리에 첨부를 결합합니다. 지정 제목·메모 평가·협찬 표기는 유지합니다. failed이면 재생성·저장 없이 알립니다."""
+   ready이면 사실을 대조하고 원래 자리에 첨부를 결합합니다. 지정 제목·메모 평가·협찬 표기는 유지합니다.
+   failed이면 Gemini에 다시 요청하지 않고, 사용자에게 실패 이유를 한 줄로 알린 뒤 claude 모드와 똑같이 같은 packet_id를
+   read_writing_packet으로 모두 읽어 Claude가 직접 씁니다. 이후 점검(dry_run)과 임시저장 단계는 같습니다."""

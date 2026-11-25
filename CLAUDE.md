@@ -15,10 +15,11 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 사진, 장소, 날짜와 함께 들어오는 글 요청은 '블로그'라는 말이 없어도 네이버 블로그 초안 요청이며 항상 스타일 가이드대로 쓴다.
 
 ## 블로그 글쓰기: 메인 에이전트와 서브에이전트
-- **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지, Gemini 위임은 `generate_gemini_draft(packet_id)`를 사용한다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. 생성 실패 시 자동 재요청·저장하지 않는다.
+- **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지, Gemini 위임은 `generate_gemini_draft(packet_id)`를 사용한다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. Gemini가 `failed`면 다시 요청하지 않고 사용자에게 이유를 한 줄로 알린 뒤, 같은 `packet_id`를 `read_writing_packet`으로 읽어 Claude가 직접 쓴다(이후 단계 동일, `gemini_writer.FALLBACK`).
 - **글쓰기 서브에이전트 — Gemini 4 Neon (High, 추론 높음)**: `DRAFT_WRITER=gemini`일 때 블로그 제목과 문안을 작성해 Claude에게 반환한다. 두 모델은 작성 지침(`core/writing_rules.py`)을 공유한다. Gemini는 참조로 연결된 같은 가이드(10절 내 글 예시 포함)·선택한 장소·공개 리뷰 분석을 사용하고, 겹침 검사용 본문 캐시는 읽지 않는다.
 - 설정은 `DRAFT_WRITER`(기본 `claude`), `AGY_PATH`, `AGY_MODEL`(코드 기본 `gemini-3.8-flash-medium`). 이 맥은 `.env`에서 `AGY_MODEL=gemini-4-neon-high`다. `agy acp`에서 지정 모델의 가용성을 확인하고 `session/set_model`로 고정한 뒤 같은 텍스트와 같은 JPEG 바이트를 순서대로 준다. 누락·한도 초과 시 중단하며 관찰 텍스트로 대체하지 않는다.
 - `agy acp`는 `--sandbox --disable-telemetry --include-default-customizations=false`와 임시 `--cli_dir_name`으로 띄우고 도구 권한 요청은 모두 거부한다. 생성 제한 250초. 응답 JSON(`{"title","parts":[{"slot","lines"}]}`)은 `gemini_writer`가 문안 자리와 대조해 블록으로 바꾼다.
+- Gemini 원고의 `text` 자리는 문단 사이 빈 줄을 `""`로 넣는다(가이드의 '생각이 바뀌는 곳에 빈 줄'). 줄 형식은 빈 문자열을 허용하고 `text`는 60줄까지, fill/subtitle/quote는 빈 줄을 뺀 뒤 개수를 센다. 이 빈 줄을 1글자 이상으로 막아 두어 실제 원고가 모두 '형식 오류'로 거부됐다(가짜 agy와 실모델 테스트는 한두 줄짜리 원고라 놓침, 2026-11-25). 앞뒤 설명 문장과 코드 울타리는 허용하고 JSON 객체는 하나만 받는다. 실패한 원문은 `NBW_HOME/gemini_failed/`에 최근 5개만 남는다.
 - 자료 모음(`writing_sources`)은 `get_style_guide`의 `writing_ref`마다 이미지 100장, 12MiB까지. `view_images`와 `extract_video_frames`는 `guide_ref`가 필수다. 같은 사진(경로)과 같은 영상 장면(경로+JPEG 해시)은 한 번만 담고 같은 V번호를 돌려준다. 더 크게 다시 본 사진은 그 자리의 JPEG만 큰 것으로 바꾼다. `visual_count`는 서로 다른 V번호 개수다.
 - 자료 묶음(`writing_packet`)은 텍스트 512KiB 이하, 경로와 URL 없음, `packet_id`는 sha256, 최근 4개를 1시간 메모리에 둔다. Gemini 생성 결과는 최근 1건만 메모리에 두고 재시작하면 사라진다.
 
@@ -44,7 +45,7 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 검증은 텍스트 전문 대조 1회다. 스크린샷 검증과 자동 재시도를 넣지 않는다. 실패 스크린샷은 디스크에만 저장한다(`RETURN_ERROR_SCREENSHOT=true`일 때만 반환).
 - 블로그 읽기는 세 가지뿐이다. 모두 공개 글만, 화면에 보이는 브라우저로 천천히 읽는다.
   1. 내 블로그(`NAVER_BLOG_ID`) 최근 게시물 최대 5개, 글쓰기마다(`core/blog_reader.py`). `NBW_HOME/my_style.md`(10절)를 새로 쓰고 겹침 비교 대상으로 쓴다.
-  2. 같은 장소의 최신 블로그 리뷰 최대 `PLACE_REVIEWS_LIMIT`(10)편, 장소 글의 장소마다 반드시(`write_post`가 24시간 안의 읽은 기록이나 실패 기록이 없으면 거부)(`core/place_reviews.py`, 플레이스 '블로그 리뷰' 최신순). Claude에게는 수치, 제목, 소제목, 60자 이하 정보 줄과 감상 줄(리뷰당 최대 6개, `feeling_samples`, 추천 문구 재료)만 보낸다. 추천 문구도 겹침 검사 대상이다. 본문 줄은 `NBW_HOME/place_reviews/`에만 두고 24시간 동안 겹침 검사에만 쓴다.
+  2. 같은 장소의 최신 블로그 리뷰 최대 `PLACE_REVIEWS_LIMIT`(10)편, 장소 글의 장소마다 반드시(`write_post`가 24시간 안의 읽은 기록이나 실패 기록이 없으면 거부)(`core/place_reviews.py`, 플레이스 '블로그 리뷰' 최신순). Claude에게는 수치, 제목, 소제목, 60자 이하 정보 줄과 감상 줄(리뷰당 최대 6개, `feeling_samples`, 추천 문구 재료)만 보낸다. 추천 문구도 겹침 검사 대상이다. 이모지 머리표로 시작하는 가게 정보 줄(📍 주소, 📞 전화, ⏰ 영업시간 등, `formatting.fact_line`)은 사실이라 겹침 문장 비교에서 뺀다. 본문 줄은 `NBW_HOME/place_reviews/`에만 두고 24시간 동안 겹침 검사에만 쓴다.
   3. 네이버 주제별 인기글과 최신글 최대 `TREND_POSTS`(15)편, `TREND_MAX_AGE_DAYS`(7)일마다(`core/trends.py`). 형식 수치만 `NBW_HOME/trends/`에 저장하고 본문은 저장하지 않는다. 가이드의 '부록 B. 최신 경향'이 된다.
   2와 3은 `READ_OTHER_BLOGS=false`면 읽지 않고 장소 리뷰 필수 확인도 끈다. 같은 장소 리뷰 파일은 24시간 뒤 `purge_expired()`가 지우고, 경향 파일에는 글 주소를 저장하지 않는다.
   다른 사람 글의 문장, 제목, 소제목을 글에 쓰지 않는다(`archive.overlap_warnings`가 같은 장소 리뷰와 거의 같은 문장을 한 문장부터 경고).
@@ -71,7 +72,7 @@ uv sync                                                    # .venv 생성 (uv.lo
 BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 47항목 (네이버 접속 없음)
 uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진과 영상 촬영 시각 정렬 25항목
 BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰(감상 줄 포함), 최신 경향, 다른 블로그 끄기 31항목
-uv run python tests/archive_test.py                        # 겹침 경고 10항목
+uv run python tests/archive_test.py                        # 겹침 경고(정보 줄 제외 포함) 12항목
 uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 이모지, 내 글 링크, 개인 규칙 파일 점검 40항목
 BROWSER_CHANNEL=chrome uv run python tests/draft_job_test.py     # stdio MCP 접수·조회·중복·재시작 (NBW_TEST_SAVE_DELAY_S=81로 장시간 재현)
 uv run python tests/gemini_writer_test.py                       # 가짜 agy로 문안 생성·회수·실패 및 dry_run, 외부 전송 없음
@@ -119,7 +120,7 @@ src/naver_blog_writer/
     ├── writing_packet.py   # Brief 검증, 묶음 고정(packet_id), 페이지 읽기
     ├── agy_acp.py        # agy acp stdio JSON-RPC 클라이언트(모델 확인, set_model, 도구 거부)
     ├── gemini_writer.py  # 생성 작업 1건 관리, 응답 JSON 검증과 블록 변환
-tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
+tests/mock_editor/         # 가짜 SmartEditor (빈 문단을 대체하는 블록 삽입, Enter 직후 버려지는 ArrowUp, 정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
 ```
 
 ## 도구 작성 규칙
@@ -146,7 +147,7 @@ tests/mock_editor/         # 가짜 SmartEditor (정렬, 굵게, 인용구 모�
 - 사진은 블록이 먼저 생기고 업로드가 나중에 끝난다. `wait_upload_done()`이 이미지 주소가 http(s)로 바뀌고 로딩 표시가 사라질 때까지 기다린다.
 - 글쓰기 주소는 로그인이 만료되면 몇 초 뒤 자바스크립트로 nid.naver.com으로 넘어간다. 공개 블로그 주소는 만료돼도 열리므로 로그인 확인에 쓰지 않는다.
 - 사진은 사진 버튼과 `page.expect_file_chooser()`로 넣고, 대체 경로는 `input#hidden-file`.
-- 블록(사진, 인용구, 구분선, 지도) 안에서 아래 문단으로 빠져나가는 키 조작은 없다. 인용구 안의 Enter는 같은 인용구 안에 새 줄을 만든다(소제목은 한 줄로만 넣고, 마무리 상자 `insert_quote()`는 이것으로 여러 줄을 넣는다). 실행 취소도 엉뚱한 글자를 지운다. 그래서 블록을 넣기 전에 `prepare_block_slot()`(마지막 문단 클릭 → Enter → ArrowUp)으로 아래에 빈 문단을 남겨 두면 텍스트 블록이 나뉘어 블록 아래에 문단이 생긴다. `move_to_end()`는 그 문단을 클릭할 뿐 블록 안에서 Enter를 누르지 않는다.
+- 블록(사진, 인용구, 구분선, 지도) 안에서 아래 문단으로 빠져나가는 키 조작은 없다. 인용구 안의 Enter는 같은 인용구 안에 새 줄을 만든다(소제목은 한 줄로만 넣고, 마무리 상자 `insert_quote()`는 이것으로 여러 줄을 넣는다). 실행 취소도 엉뚱한 글자를 지운다. 그래서 블록을 넣기 전에 `prepare_block_slot()`(마지막 문단 클릭 → Enter, 문단 수 증가 확인 → 윗 문단을 직접 클릭)으로 아래에 빈 문단을 남겨 두면 텍스트 블록이 나뉘어 블록 아래에 문단이 생긴다. 인용구와 사진은 커서가 있는 빈 문단을 대체해서 들어가므로, 커서가 맨 끝 문단에 있으면 블록이 글의 끝이 되어 빠져나올 수 없다. 윗 문단으로 ArrowUp을 쓰지 않는다: 46블록 글에서 Enter 직후의 ArrowUp이 버려져 포스트잇 마무리 상자가 맨 끝 빈 문단을 대체했고 해시태그 단계에서 저장 전에 멈췄다(2026-11-25 실제 에디터). 블록마다 `ensure_text_after()`로 아래 문단이 남았는지 확인하고, 없으면 그 블록에서 바로 멈춘다. `move_to_end()`는 그 문단을 클릭할 뿐 블록 안에서 Enter를 누르지 않는다.
 - 브라우저의 선택 영역(getSelection)은 에디터 내부 커서와 다르다. 글을 입력한 직후 키보드 위치를 믿지 말고 블록을 넣기 전에 마지막 문단을 직접 클릭한다. 위치 확인은 결과(블록 배치 순서, `verify_text`의 layout)로 한다.
 - 이모지(4바이트 문자)가 섞인 글자를 한 번에 넣으면 이모지만 남는다. `type_text()`가 이모지 앞뒤로 나눠 입력한다.
 - 변형 선택자가 붙은 2바이트 기호(✔️ ❤️ ☀️의 U+FE0F)는 따로 넣어도 그다음 입력과 Enter가 사라진다. `editor_text()`가 입력 전에 선택자만 지운다(✔로 들어감). 검증 `_norm`도 선택자를 무시한다.

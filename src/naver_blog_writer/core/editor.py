@@ -328,15 +328,38 @@ async def prepare_block_slot(frame: Frame) -> None:
 
     SmartEditor는 블록 안(특히 인용구)에서 아래 문단으로 빠져나가는 키 조작이 없습니다. 인용구 안에서 Enter를 누르면
     소제목이 쪼개집니다. 대신 텍스트 문단 중간에 블록을 넣으면 텍스트 블록이 위아래로 나뉘어 블록 아래에 빈 문단이 남습니다.
-    그래서 Enter로 빈 줄을 하나 더 만들고 위로 올라간 자리에 블록을 넣습니다(실제 에디터에서 인용구, 구분선으로 확인).
+    그래서 Enter로 빈 줄을 하나 더 만들고 그 위 문단에 블록을 넣습니다(실제 에디터에서 인용구, 구분선으로 확인).
 
     시작 전에 항상 마지막 문단을 직접 눌러 커서를 확정합니다. 글을 입력한 직후의 키보드 위치를 그대로 쓰면
     에디터 내부 커서가 그 텍스트 블록의 맨 앞에 남아 있는 경우가 있어, 블록이 문단 위에 들어갔습니다(실제 에디터에서 확인).
+
+    위 문단으로는 ArrowUp이 아니라 그 문단을 직접 눌러 올라갑니다. 46블록 글에서 Enter 직후의 ArrowUp이 버려져
+    마무리 상자가 맨 끝 빈 문단을 대체했고, 아래에 해시태그를 쓸 문단이 남지 않아 저장 전에 멈췄습니다(실제 에디터에서 확인).
+    인용구와 사진은 커서가 있는 빈 문단을 대체해서 들어가므로, 그 아래 문단이 남는지는 ensure_text_after()로 확인합니다.
     """
+    page = frame.page
     await move_to_end(frame)
-    await frame.page.keyboard.press("Enter")
-    await frame.page.keyboard.press("ArrowUp")
+    last, _cls, _n = await _last_component(frame)
+    paras = last.locator(S.TEXT_PARAGRAPH)
+    before = await paras.count()
+    await asyncio.sleep(LINE_PACE_S)
+    await page.keyboard.press("Enter")
+    deadline = time.monotonic() + 3
+    while await paras.count() <= before:
+        if time.monotonic() >= deadline:
+            raise EditorError("블록 아래에 둘 빈 문단을 만들지 못했습니다(Enter가 반영되지 않음).")
+        await asyncio.sleep(0.2)
+    await asyncio.sleep(LINE_PACE_S)
+    await click_paragraph_end(paras.nth(before - 1), frame=frame)
+    await page.keyboard.press(LINE_END_KEY)
     await asyncio.sleep(0.2)
+
+
+async def ensure_text_after(frame: Frame, what: str) -> None:
+    """방금 넣은 블록 아래에 텍스트 문단이 남았는지 확인합니다. 없으면 다음 입력을 이어 갈 수 없으므로 여기서 멈춥니다."""
+    _last, cls, _n = await _last_component(frame)
+    if S.TEXT_COMPONENT_CLASS not in cls.split():
+        raise EditorError(f"{what} 아래에 이어 쓸 문단이 남지 않았습니다(블록이 맨 끝 빈 문단을 대체함). 저장하지 않고 멈춥니다.")
 
 
 async def move_to_end(frame: Frame) -> None:

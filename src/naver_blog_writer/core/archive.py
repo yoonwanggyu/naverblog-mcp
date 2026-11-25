@@ -5,6 +5,7 @@
 2. 이 서버가 임시저장한 최근 글(최대 5개): 아직 발행 전이라 블로그에 없는 초안. NBW_HOME/archive/*.json
 3. 같은 장소의 다른 사람 리뷰(최대 10개): place_reviews가 24시간 안에 분석한 것. 같은 가게라 키워드는 당연히 겹치므로
    메인 키워드와 도입 유형은 비교하지 않고 제목, 소제목, 도입과 마무리, 거의 같은 문장만 비교합니다.
+가게 정보 줄(📍 주소, 📞 전화, ⏰ 영업시간처럼 이모지 머리표로 시작하는 줄)은 사실이라 문장 비교에서 뺍니다.
 저장 항목: 제목, 메인 키워드, 소제목, 태그, 도입 유형, 본문 전문.
 """
 
@@ -18,7 +19,7 @@ from difflib import SequenceMatcher
 
 from .. import config
 from . import blog_reader, place_reviews
-from .formatting import split_sentences
+from .formatting import fact_line, split_sentences
 
 KEEP = 5
 HOOK_PATTERNS = ("인사형", "상황형", "질문형", "요약형", "감성형")  # 도입 유형 (스타일 가이드 4-3절)
@@ -64,8 +65,10 @@ def _sim(a: str, b: str) -> float:
 
 
 def _sentences(body: str) -> list[str]:
-    """줄마다, 그리고 문장 부호마다 나눈 문장. 마침표 없이 줄만 바꿔 쓰는 블로그 글도 한 줄씩 비교합니다."""
-    return [s for line in (body or "").split("\n") for s in split_sentences(line) if s.strip()]
+    """줄마다, 그리고 문장 부호마다 나눈 문장. 마침표 없이 줄만 바꿔 쓰는 블로그 글도 한 줄씩 비교합니다.
+    가게 정보 줄(📍 주소, 📞 전화 등)은 같은 가게면 값이 같을 수밖에 없으므로 비교하지 않습니다."""
+    return [s for line in (body or "").split("\n") if not fact_line(line)
+            for s in split_sentences(line) if s.strip()]
 
 
 def comparison_posts() -> list[dict]:

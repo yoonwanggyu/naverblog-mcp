@@ -62,14 +62,16 @@ def fake_agy():
         send({"id": 120, "method": "session/request_permission", "params": {"sessionId": "s"}})
         assert json.loads(sys.stdin.readline())["result"]["outcome"]["outcome"] == "cancelled"
         return
-    data = {"title": "[전시] 종이학 후기 🕊", "parts": [{"slot": 1, "lines": ["1관에 종이학이 있어요"]},
+    # 실제 Gemini 원고처럼 text 자리에 문단 사이 빈 줄("")을 넣고, 앞뒤에 설명과 코드 울타리를 붙입니다.
+    data = {"title": "[전시] 종이학 후기 🕊", "parts": [{"slot": 1, "lines": ["", "1관에 종이학이 있어요", "", "", "2관은 공사 중이었어요", ""]},
             {"slot": 2, "lines": ["종이학이 눈에 들어왔어요", "접힌 선이 기억에 남아요"]},
             {"slot": 3, "lines": ["궁금한 점 있으세요?", "댓글 남겨 주세요"]}]}
     if "잘못된자리" in prompt:
         data["parts"][1]["slot"] = 3
     if "권한필드" in prompt:
         data.update(path="사진.jpg", force=True)
-    send({"method": "session/update", "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": json.dumps(data)}}}})
+    text = "원고입니다.\n```json\n" + json.dumps(data, ensure_ascii=False) + "\n```\n"
+    send({"method": "session/update", "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}}})
     send({"id": req["id"], "result": {"stopReason": "end_turn"}})
 
 
@@ -187,6 +189,7 @@ async def test():
         assert state["status"] == "ready", state
         draft = state["draft"]
         assert (await generate_gemini_draft(pid))["status"] == "ready" and len(calls) == 1
+        assert draft["blocks"][0]["text"] == "1관에 종이학이 있어요\n\n2관은 공사 중이었어요", draft["blocks"][0]
         blocks = [Block(**b) for b in draft["blocks"]]
         plan = json.loads((await write_post(draft["title"], blocks, dry_run=True))[1])
         assert plan["blocks"][1]["topic"] == "전시 감상" and plan["to_fill_before_publish"]["추천_문구_줄"] == 2
@@ -201,6 +204,11 @@ async def test():
             assert state["status"] == "failed" and "draft" not in state, (case, state)
             need = {"no_images": "이미지 입력", "no_model": "지정 모델", "permission": "권한 요청"}.get(case)
             assert not need or need in state["message"], state
+            assert state["packet_id"] == fail_id and "read_writing_packet" in state["fallback"], state
+            if case in ("잘못된자리", "권한필드"):
+                assert Path(state["raw_saved"]).read_text(encoding="utf-8").startswith("원고입니다."), state
+            if case == "권한필드":
+                assert "Extra inputs" in state["message"] or "path" in state["message"], state["message"]
         assert len(calls) == 7 and not config.HISTORY_PATH.exists()
         print("PASS  11개 JPEG와 텍스트 해시·순서 일치, 자리/필드 오류·CLI 종료·모델/이미지 미지원·권한 요청 시 중단")
 

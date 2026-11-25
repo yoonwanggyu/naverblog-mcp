@@ -386,6 +386,8 @@ async def _process(title: str, blocks: list[Block], tags: list[str] | None, main
                     else:
                         notes.append(f"링크 '{b.url}': 미리보기 카드가 만들어지지 않아 주소 줄(누를 수 있는 링크)만 남았습니다.")
                         b = Block(type="text", text=b.url or "")
+                if b.type in NON_TEXT:
+                    await editor.ensure_text_after(frame, f"{idx + 1}번 블록({b.type})")
                 prev = "text" if b.type in TEXTLIKE else "subtitle" if b.type == "quote" else b.type
                 layout.append(prev)
                 await editor.dismiss_popups(frame)

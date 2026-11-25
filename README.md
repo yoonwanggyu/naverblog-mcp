@@ -22,89 +22,74 @@ Claude Desktop에 연결해서 "11월 14일에 다녀온 젠스시 사진으로 
 
 **메인 에이전트 Claude**가 자료를 모으고 판단하고 조립합니다. **서브 에이전트 Gemini**는 글(제목과 문안)만 씁니다. 실제 파일, 브라우저, 네이버 작업은 모두 **로컬 MCP 서버**가 합니다.
 
-### 시스템 구성도
+### 구성도
+
+MCP 공식 문서의 **호스트 → 서버 → 외부 자원** 배치에, 멀티 에이전트 문서에서 흔히 쓰는 **오케스트레이터(메인) → 워커(서브)** 구분과 번호 붙인 단계를 합쳐 한 장으로 그렸습니다. 가운데 서버 상자 안의 ①~⑥이 Claude가 부르는 도구 순서입니다.
 
 ```mermaid
 flowchart LR
-    U(["👤 사용자"])
-    subgraph DESK["Claude Desktop"]
-        CL["🧠 메인 에이전트 · Claude<br/>검색 · 도구 호출 · 판단<br/>사실 대조 · 첨부 조립"]
+    U(["👤 사용자<br/>'11월 14일 젠스시<br/>사진으로 써줘'"])
+
+    subgraph HOST["🖥️ Claude Desktop · MCP 호스트"]
+        CL["🧠 <b>메인 에이전트 · Claude</b><br/>오케스트레이터<br/>───────────<br/>도구 호출 순서 · 확인 질문<br/>사실 대조 · 첨부 조립"]
     end
-    subgraph SRV["🧰 로컬 MCP 서버 · naver-blog-writer"]
+
+    subgraph SRV["🧰 로컬 MCP 서버 · naver-blog-writer · stdio"]
         direction TB
-        T1["가이드 · 자료 도구<br/>가이드, 폴더, 사진, 장소, 리뷰"]
-        T2["집필 자료 묶음<br/>packet: 텍스트 + JPEG"]
-        T3["Gemini 연결<br/>agy acp, 도구 권한 없음"]
-        T4["저장 작업<br/>job: 백그라운드 입력과 저장"]
+        S1["<b>① 가이드 준비</b><br/>get_style_guide → writing_ref<br/>내 글 5편 · 최신 경향 · 기본 가이드"]
+        S2["<b>② 자료 수집</b> · guide_ref<br/>list_folders → scan_media<br/>view_images · extract_video_frames<br/>find_place → place_reviews<br/>load_research · my_post_links"]
+        S3["<b>③ 집필 자료 확정</b><br/>prepare_writing_packet → packet_id<br/>요청 · 메모 · 사실 · 본 JPEG 그대로"]
+        S4{"<b>④ 작성자</b><br/>DRAFT_WRITER"}
+        S4A["claude<br/>read_writing_packet"]
+        S4B["gemini<br/>generate_gemini_draft<br/>⏳ gemini_draft_status"]
+        S5["<b>⑤ 조립 · 점검</b><br/>write_post · dry_run<br/>lint · 겹침 · 사진 순서"]
+        S6["<b>⑥ 임시저장</b><br/>write_post → job_id 1초 안에<br/>⏳ draft_status → saved"]
+        S1 --> S2 --> S3 --> S4
+        S4 -->|claude| S4A --> S5
+        S4 -->|gemini| S4B --> S5
+        S4B -.->|"failed면 Claude가 직접"| S4A
+        S5 --> S6
     end
-    GM["✍️ 서브 에이전트<br/>Gemini 4 Neon High<br/>제목 · 문안만 작성"]
-    DRV[("📁 Google Drive<br/>사진 · 영상 폴더")]
-    NV[("🌐 네이버<br/>블로그 · 지도 · 플레이스")]
-    U <--> CL
-    CL <-->|"stdio MCP"| SRV
-    T1 --> DRV
-    T1 -->|"크롬 창"| NV
-    T2 --> T3
-    T3 <-->|"같은 텍스트 + 같은 JPEG<br/>↔ 제목 · 문안 JSON"| GM
-    T4 -->|"크롬 창, 임시저장만"| NV
+
+    subgraph WORKER["✍️ 서브 에이전트 · 워커"]
+        GM["<b>Gemini 4 Neon High</b><br/>agy acp · 샌드박스<br/>도구 권한 없음<br/>제목 · 문안만 작성"]
+    end
+
+    subgraph EXT["🌍 외부 자원"]
+        DRV[("📁 Google Drive<br/>사진 · 영상 폴더")]
+        NV[("🌐 네이버<br/>블로그 · 지도 · 에디터")]
+    end
+
+    U <-->|"요청 · 확인 질문 · 결과"| CL
+    CL <-->|"MCP 도구 호출 ①→⑥"| SRV
+    S2 -.->|"MEDIA_ROOTS 안만 읽기"| DRV
+    S1 -.->|"크롬 창 · 공개 글 읽기"| NV
+    S2 -.->|"장소 검색 · 같은 장소 리뷰"| NV
+    S4B <-->|"같은 텍스트 + JPEG ⇄ 제목 · 문안 JSON"| GM
+    S6 ==>|"크롬 창 · 임시저장만 · 발행 차단"| NV
+
     classDef user fill:#FFF4D6,stroke:#E0A800,color:#5C4400
     classDef claude fill:#E8F1FF,stroke:#3B82F6,color:#1E3A8A
     classDef gemini fill:#F3E8FF,stroke:#9333EA,color:#581C87
-    classDef server fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef step fill:#F8FAFC,stroke:#64748B,color:#1E293B
+    classDef job fill:#FEF2F2,stroke:#EF4444,color:#7F1D1D
     classDef ext fill:#ECFDF5,stroke:#10B981,color:#064E3B
     class U user
-    class CL claude
-    class GM gemini
-    class T1,T2,T3,T4 server
+    class CL,S4A claude
+    class GM,S4B gemini
+    class S1,S2,S3,S4,S5 step
+    class S6 job
     class DRV,NV ext
 ```
 
-### 세부 도구 흐름
-
-```mermaid
-flowchart TB
-    REQ(["👤 '11월 14일 젠스시 사진으로 써줘'"])
-    subgraph P1["① 가이드 준비 · Claude"]
-        A1["get_style_guide(topic)<br/>내 글 5편 + 최신 경향 + 기본 가이드<br/>→ writing_ref"]
-    end
-    subgraph P2["② 자료 수집 · Claude (모든 호출에 guide_ref)"]
-        B1["list_folders<br/>애매하면 '이게 맞습니까?'"] --> B2["scan_media<br/>촬영 시각순 · 영상 여러 개면 선택 질문"]
-        B2 --> B3["view_images · extract_video_frames<br/>본 JPEG를 이번 글 자료에 연결"]
-        B3 --> B4["find_place → place_reviews<br/>장소 ID · 같은 장소 리뷰 10편"]
-        B4 --> B5["load_research · my_post_links<br/>필요할 때만"]
-    end
-    subgraph P3["③ 집필 자료 확정 · Claude"]
-        C1["prepare_writing_packet(brief)<br/>요청 · 메모 · 정정 · 확인된 사실 · 문안 자리<br/>→ packet_id"]
-    end
-    subgraph P4["④ 문안 작성 (DRAFT_WRITER)"]
-        D0{"작성자"}
-        D1["🧠 Claude 직접<br/>read_writing_packet<br/>0쪽 텍스트 + 이미지 쪽 전부"]
-        D2["✍️ Gemini 위임<br/>generate_gemini_draft → generation_id<br/>gemini_draft_status → ready"]
-        D0 -->|claude| D1
-        D0 -->|gemini| D2
-    end
-    subgraph P5["⑤ 조립과 점검 · Claude"]
-        E1["사실 대조 · 사진/영상/지도/링크 자리 결합"] --> E2["write_post(dry_run)<br/>lint · 겹침 · 사진 순서"]
-    end
-    subgraph P6["⑥ 임시저장 · 백그라운드 작업"]
-        F1["write_post → job_id 즉시 반환"] --> F2["draft_status(job_id, 10초)<br/>running → saved"]
-    end
-    DONE(["👤 네이버 '저장' 목록에서<br/>직접 채우고 발행"])
-    REQ --> A1 --> B1
-    B5 --> C1 --> D0
-    D1 --> E1
-    D2 --> E1
-    E2 --> F1
-    F2 --> DONE
-    classDef user fill:#FFF4D6,stroke:#E0A800,color:#5C4400
-    classDef claude fill:#E8F1FF,stroke:#3B82F6,color:#1E3A8A
-    classDef gemini fill:#F3E8FF,stroke:#9333EA,color:#581C87
-    classDef job fill:#F1F5F9,stroke:#64748B,color:#1E293B
-    class REQ,DONE user
-    class A1,B1,B2,B3,B4,B5,C1,D1,E1,E2 claude
-    class D2 gemini
-    class D0,F1,F2 job
-```
+| 단계 | Claude가 부르는 도구 | 결과 |
+|---|---|---|
+| ① 가이드 준비 | `get_style_guide(topic)` | 전체 가이드, 이번 글의 자료 번호 `writing_ref`, 작성자 `draft_writer` |
+| ② 자료 수집 | `list_folders` → `scan_media` → `view_images` · `extract_video_frames` → `find_place` → `place_reviews` (→ `load_research` · `my_post_links`) | 폴더 확인 질문, 촬영 시각순 목록, Claude가 본 JPEG, 장소 ID, 같은 장소 리뷰 분석. 모두 `guide_ref`로 이번 글 자료에 모임 |
+| ③ 자료 확정 | `prepare_writing_packet(brief)` | `packet_id`: 두 작성자가 똑같이 받는 텍스트와 이미지 |
+| ④ 문안 | claude: `read_writing_packet` / gemini: `generate_gemini_draft` → `gemini_draft_status` | 제목과 자리별 문안 |
+| ⑤ 점검 | `write_post(dry_run=true)` | 말투, 겹침, 사진 순서 경고. 고친 최종본만 다음 단계로 |
+| ⑥ 임시저장 | `write_post` → `draft_status(job_id)` | 1초 안에 접수, 조회로 진행 단계 확인, `saved`일 때만 성공 |
 
 | 누가 | 하는 일 | 하지 않는 일 |
 |---|---|---|
@@ -271,7 +256,7 @@ AGY_MODEL=gemini-4-neon-high
 
 Gemini는 `agy acp`의 지정 모델(`AGY_MODEL`)에서 한 번만 문안을 생성합니다. 텍스트만으로 대체하지 않습니다. 자료 묶음은 최근 4개, 최대 한 시간 메모리에 유지합니다. 글 하나당 JPEG 100장/12MiB, 텍스트 512KiB를 넘거나 확인한 이미지 수(`visual_count`)가 다르면 오류로 알립니다. 같은 사진을 다시 보면 묶음에는 한 번만 들어가고(같은 V번호) 한 장으로 셉니다. 더 크게 다시 봤으면 큰 미리보기로 바꿉니다. Claude가 검토하고 사진·지도를 조립해 기존 점검·저장을 진행합니다.
 
-`generate_gemini_draft`의 `generation_id`는 **글 생성** 접수 번호이고, `gemini_draft_status`의 `ready`는 문안만 완성됐다는 뜻입니다. 서버 메모리에 최근 생성 한 건을 두며 재시작하면 지워집니다. 네이버 임시저장 여부는 별도의 `draft_status`가 `saved`일 때만 확인됩니다. Gemini에 실패하면 자동 대체·저장하지 않습니다. 원래 방식으로 돌아가려면 `DRAFT_WRITER=claude`로 바꾸고 재시작하세요.
+`generate_gemini_draft`의 `generation_id`는 **글 생성** 접수 번호이고, `gemini_draft_status`의 `ready`는 문안만 완성됐다는 뜻입니다. 서버 메모리에 최근 생성 한 건을 두며 재시작하면 지워집니다. 네이버 임시저장 여부는 별도의 `draft_status`가 `saved`일 때만 확인됩니다. Gemini가 실패하면 다시 요청하지 않고, Claude가 실패 이유를 알린 뒤 같은 자료 묶음을 읽어 직접 씁니다. 실패한 응답 원문은 원인 확인용으로 `~/.naver-blog-writer/gemini_failed/`에만 최근 5개 남습니다. 처음부터 Claude만 쓰려면 `DRAFT_WRITER=claude`로 바꾸고 재시작하세요.
 
 ### 발행 전에 할 일
 
@@ -323,7 +308,7 @@ Gemini는 `agy acp`의 지정 모델(`AGY_MODEL`)에서 한 번만 문안을 생
 | 사실&nbsp;규칙 | 폴더 이름, 메모, 사진 속 글자, 네이버 지도 결과, 2곳 이상 일치하는 리뷰 값, 리서치 노트만 사실로 사용. 모르는 값은 `[[확인필요]]` |
 | 주관&nbsp;평가 | 맛, 메뉴 설명, 분위기, 느낀 점, 추천은 `[이 부분에 직접 입력하시기 바랍니다]` + `(추천 문구)` 줄 |
 | 말투&nbsp;점검 | 마침표만 이어지는 줄, 같은 어미 반복, 촬영 시각, 긴 줄, 퀴즈와 비유 소제목, 음식 해설을 저장 전에 경고 |
-| 겹침&nbsp;검사 | 최근 글과 제목, 키워드, 소제목, 도입과 마무리, 반복 문장이 겹치면 경고. 같은 장소의 다른 사람 리뷰와 거의 같은 문장은 한 문장부터 경고 |
+| 겹침&nbsp;검사 | 최근 글과 제목, 키워드, 소제목, 도입과 마무리, 반복 문장이 겹치면 경고. 같은 장소의 다른 사람 리뷰와 거의 같은 문장은 한 문장부터 경고. 📍 주소, 📞 전화, ⏰ 영업시간처럼 이모지로 시작하는 정보 줄은 사실이라 비교하지 않음 |
 | 다른&nbsp;블로그 | 형식 수치와 짧은 정보 줄, 감상 줄(추천 문구 재료, 그대로 옮기면 경고)만 사용. 본문은 Claude에게 보내지 않고, 겹침 검사용 본문은 24시간 뒤 삭제. `READ_OTHER_BLOGS=false`로 끔 |
 | 저장&nbsp;확인 | 저장 완료 신호(알림, 저장 글 수, 저장 응답)를 확인한 뒤에만 성공으로 보고 |
 | 저장&nbsp;접수 | `write_post`는 접수 번호만 바로 돌려주고 `draft_status`로 조회. 같은 글은 같은 작업으로 묶고, 작업 중에 다른 글은 거부. 끊긴 저장은 `unconfirmed`로 남기고 자동 재시도 없음 |
@@ -434,7 +419,7 @@ uvx ruff check src tests
 
 <br>
 
-실제 모델의 이미지 입력은 별도 `uv run python tests/gemini_image_live_test.py --live`로 확인할 수 있습니다. `gemini-4-neon-high` 계정 한도를 사용하며, 가상 메뉴판 한 장에만 적힌 임의 표식을 원고에서 확인합니다. 개인 자료와 네이버 실저장은 사용하지 않습니다.
+실제 모델의 이미지 입력은 별도 `uv run python tests/gemini_image_live_test.py --live`로 확인할 수 있습니다. 실제 Gemini(`AGY_MODEL`)에 문안 요청을 한 번 보내므로 `agy`에 로그인한 Google 계정의 사용량(요금제별 사용 한도)에서 그만큼 차감됩니다. API 키 과금 방식이 아닙니다. 가상 메뉴판 한 장에만 적힌 임의 표식을 원고에서 확인합니다. 개인 자료와 네이버 실저장은 사용하지 않습니다.
 
 ## 문제 해결
 
@@ -450,7 +435,7 @@ uvx ruff check src tests
 | `FAILED`와 스크린샷 | 같은 요청을 반복하지 말고 `~/.naver-blog-writer/errors`의 스크린샷 확인 후 `inspect_editor`로 진단 |
 | "작성 중인 글이 있습니다" 창 | 저장하지 않고 편집하다 만 내용이 있으면 뜸. 서버가 창이 뜰 때까지 기다렸다가 '취소'를 눌러 새 글로 시작하고 결과 `notes`에 알림. '저장' 목록의 임시저장 글은 그대로 남고 새 글은 따로 저장됨 |
 | 한글이 빠짐 | `TYPING_MODE=type` |
-| Gemini 문안 `failed` | `check_setup`으로 `agy` 경로와 로그인 확인, `agy models`에 `AGY_MODEL`이 있는지 확인. 자동으로 다시 요청하지 않으므로 원인을 고친 뒤 새로 요청하거나 `DRAFT_WRITER=claude`로 되돌림 |
+| Gemini 문안 `failed` | 이번 글은 Claude가 같은 자료로 직접 씀. 반복되면 `check_setup`으로 `agy` 경로와 로그인, `agy models`의 `AGY_MODEL` 확인. 형식 오류면 `~/.naver-blog-writer/gemini_failed/`의 원문과 오류 문구(어느 자리, 어떤 규칙)를 확인 |
 
 <br>
 

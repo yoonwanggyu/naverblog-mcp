@@ -18,8 +18,11 @@ import unicodedata
 
 _ZERO_WIDTH = re.compile(r"[​‌‍﻿]")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u231A-\u23FF☀-➿⭐❤✅✔][️‍]*")
+# 가게 정보 줄의 이모지 머리표(📌 📍 ⏰ 🕒 🚗 📞 💰 🍽 ☕ 🚌 🚇): 주소, 영업시간, 주차, 전화, 가격처럼 확인된 사실을 적는 줄
+_INFO_HEAD = "[\U0001F4CC\U0001F4CD⏰\U0001F552\U0001F697\U0001F4DE\U0001F4B0\U0001F37D☕\U0001F68C\U0001F687]"
+_FACT_LINE = re.compile(rf"^{_INFO_HEAD}")
 # 정보 줄과 목록 줄: 체크 표시, 이모지 머리표, 목록 기호, 번호
-_LIST_LINE = re.compile(r"^(?:[✔✅☑•·\-–▶▪︎◾️●○]|[\U0001F4CC\U0001F4CD⏰\U0001F552\U0001F697\U0001F4DE\U0001F4B0\U0001F37D☕\U0001F68C\U0001F687]|\d{1,2}[.)])\s*")
+_LIST_LINE = re.compile(rf"^(?:[✔✅☑•·\-–▶▪︎◾️●○]|{_INFO_HEAD}|\d{{1,2}}[.)])\s*")
 # 문장 끝: 마침표, 물음표, 느낌표 (뒤에 닫는 따옴표나 괄호, 이모지가 올 수 있음) 다음 공백
 _SENT_END = re.compile(r"(?<=[.!?…~])[\"'”’)\]]*\s+")
 # 줄을 나누기 좋은 자리: 쉼표 뒤, 연결 어미 뒤의 공백
@@ -72,6 +75,12 @@ def _info_line(line: str) -> bool:
     """정보 줄, 직접 입력 자리, 추천 문구, 태그, 주소 줄. 말투 점검과 자동 나눔에서 뺍니다."""
     return (bool(_LIST_LINE.match(line)) or line.startswith(PLACEHOLDER) or line.startswith(SUGGESTION_PREFIX)
             or line.startswith("#") or "http" in line)
+
+
+def fact_line(line: str) -> bool:
+    """이모지 머리표로 시작하는 가게 정보 줄(📍 주소, 📞 전화, ⏰ 영업시간 등). 같은 가게면 누구 글이든 값이 같으므로
+    겹침 검사에서 뺍니다. 추천 문구, 체크리스트, 목록 줄은 여기에 들지 않아 계속 검사합니다."""
+    return bool(_FACT_LINE.match(line.strip()))
 
 
 def _protected(line: str) -> bool:

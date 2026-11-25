@@ -50,4 +50,18 @@ w2 = archive.overlap_warnings("구로 웨딩홀 투어 다섯 곳 비교하고 �
                               "결혼 날짜를 정하고 나서 웨딩홀부터 알아봤어요. 다섯 곳을 직접 둘러보고 비교했거든요.\n"
                               "저희는 식대보다 홀 분위기를 더 중요하게 봤어요. 결국 천장이 높은 홀로 계약했어요.")
 check("다른 글은 경고 없음", w2 == [], str(w2))
+
+# 같은 가게의 정보 줄(📍 주소, 📞 전화)은 다른 리뷰와 같아도 경고하지 않고, 일반 문장과 추천 문구는 계속 경고합니다.
+REVIEW = ("📍 서울 마포구 성암로15길 47 1층 히카루\n📞 전화 0507-1365-6712\n"
+          "퇴근하고 들렀는데 하이볼이 진하고 시원해서 좋았어요")
+archive.place_reviews.load_recent_for_overlap = lambda: [{"title": "상암 히카루 후기", "subtitles": [], "body": REVIEW}]
+archive.config.READ_OTHER_BLOGS = True
+info_only = archive.overlap_warnings("상암동 평일 저녁 기록", None, None, [],
+                                     "📍 서울 마포구 성암로15길 47 1층 히카루\n📞 전화 0507-1365-6712\n"
+                                     "두 번째에는 처음과 다른 메뉴도 주문했어요")
+check("정보 줄은 같은 장소 리뷰와 같아도 경고 없음", not any("거의 같은 문장" in x for x in info_only), str(info_only))
+copied = archive.overlap_warnings("상암동 평일 저녁 기록", None, None, [],
+                                  "📍 서울 마포구 성암로15길 47 1층 히카루\n"
+                                  "(추천 문구) 퇴근하고 들렀는데 하이볼이 진하고 시원해서 좋았어요")
+check("추천 문구는 정보 줄과 달리 계속 경고", any("거의 같은 문장이 1개" in x for x in copied), str(copied))
 sys.exit(0 if all(results) else 1)
