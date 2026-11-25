@@ -140,19 +140,19 @@ async def start(packet_id: str) -> dict:
     if config.DRAFT_WRITER != "gemini":
         raise ValueError("Gemini 글쓰기가 꺼져 있습니다(DRAFT_WRITER=claude).")
     packet = writing_packet.get(packet_id)
-    exe = executable()
     if _latest and not _latest.task.done():
         if _latest.packet_id != packet_id:
             raise ValueError("다른 Gemini 문안을 생성 중입니다. gemini_draft_status로 먼저 확인하세요.")
         return {"generation_id": _latest.generation_id, "status": "running"}
-    if _latest and _latest.packet_id == packet_id and _latest.task.result().get("status") == "ready":
-        return {"generation_id": _latest.generation_id, "status": "ready"}
+    if _latest and _latest.packet_id == packet_id:  # 같은 묶음의 결과(ready/failed)는 그대로 돌려줍니다. 실패도 재요청하지 않습니다.
+        return {"generation_id": _latest.generation_id, "status": _latest.task.result().get("status")}
 
     generation_id = uuid4().hex
 
     async def run() -> dict:
         response: str | None = None
         try:
+            exe = executable()  # agy가 없어도 failed 기록을 남겨 Claude 대체 작성으로 넘어갈 수 있게 합니다.
             response = await agy_acp.run(exe, config.AGY_MODEL, packet)
             return {"status": "ready", "draft": assemble(packet, response), "model": config.AGY_MODEL, "packet_id": packet_id}
         except asyncio.TimeoutError:
@@ -168,6 +168,14 @@ async def start(packet_id: str) -> dict:
 
     _latest = Generation(generation_id, packet_id, asyncio.create_task(run()))
     return {"generation_id": _latest.generation_id, "status": "running"}
+
+
+def outcome(packet_id: str) -> str | None:
+    """이 packet_id로 만든 Gemini 문안의 상태(running/ready/failed). 기록이 없으면 None(서버 재시작 시 사라짐)."""
+    job = _latest
+    if not job or job.packet_id != packet_id:
+        return None
+    return job.task.result()["status"] if job.task.done() else "running"
 
 
 async def status(generation_id: str | None, wait_seconds: int) -> dict:

@@ -30,7 +30,10 @@ GEMINI_HANDOFF = """작성자에 관계없이 글감 수집 때 scan_media, view
    대화 중 정정은 user_updates, 외부 웹에서 사용한 본문 근거는 web_findings에 출처명·기준일과 함께 명시합니다. 경로·URL은 넣지 않습니다. 미확인 값은 facts에 표시합니다.
    작성자는 확정한 packet_id의 텍스트와 이미지 순서만 집필 근거로 씁니다. 누락을 발견하면 자료를 보완해 다시 확정합니다.
    claude 모드면 read_writing_packet(packet_id, page=0..pages-1)로 모든 쪽을 순서대로 읽고 직접 씁니다.
-   gemini 모드면 generate_gemini_draft(packet_id)에 맡기고 gemini_draft_status(generation_id, wait_seconds=10)로 조회만 반복합니다.
+   gemini 모드면 prepare_writing_packet이 Gemini 작성을 바로 시작해 generation_id를 돌려줍니다. Claude는 쓰지 않고
+   gemini_draft_status(generation_id, wait_seconds=10)로 조회만 반복합니다(이때 read_writing_packet은 거부됩니다).
    ready이면 사실을 대조하고 원래 자리에 첨부를 결합합니다. 지정 제목·메모 평가·협찬 표기는 유지합니다.
    failed이면 Gemini에 다시 요청하지 않고, 사용자에게 실패 이유를 한 줄로 알린 뒤 claude 모드와 똑같이 같은 packet_id를
-   read_writing_packet으로 모두 읽어 Claude가 직접 씁니다. 이후 점검(dry_run)과 임시저장 단계는 같습니다."""
+   read_writing_packet으로 모두 읽어 Claude가 직접 씁니다. 이후 점검(dry_run)과 임시저장 단계는 같습니다.
+   write_post(dry_run 포함)에는 항상 packet_id를 넣습니다. gemini 모드에서 Gemini 결과(ready, 또는 failed 뒤 묶음 전부 읽기)가
+   없으면 서버가 거부합니다. 결과의 writer 값(gemini / claude)으로 누가 썼는지 사용자에게 보고합니다."""

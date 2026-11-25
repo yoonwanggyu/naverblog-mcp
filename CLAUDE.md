@@ -15,7 +15,7 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 사진, 장소, 날짜와 함께 들어오는 글 요청은 '블로그'라는 말이 없어도 네이버 블로그 초안 요청이며 항상 스타일 가이드대로 쓴다.
 
 ## 블로그 글쓰기: 메인 에이전트와 서브에이전트
-- **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지, Gemini 위임은 `generate_gemini_draft(packet_id)`를 사용한다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. Gemini가 `failed`면 다시 요청하지 않고 사용자에게 이유를 한 줄로 알린 뒤, 같은 `packet_id`를 `read_writing_packet`으로 읽어 Claude가 직접 쓴다(이후 단계 동일, `gemini_writer.FALLBACK`).
+- **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지를 쓴다. Gemini 모드에서는 `prepare_writing_packet`이 자료를 확정하면서 Gemini 작성을 바로 시작하고(`generation_id` 반환, Claude가 Gemini를 따로 부르는 도구는 없다), `read_writing_packet`은 Gemini가 `failed`일 때만 열린다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. Gemini가 `failed`면 다시 요청하지 않고 사용자에게 이유를 한 줄로 알린 뒤, 같은 `packet_id`를 `read_writing_packet`으로 읽어 Claude가 직접 쓴다(이후 단계 동일, `gemini_writer.FALLBACK`). `write_post`(dry_run 포함)는 `packet_id`를 받아, `DRAFT_WRITER=gemini`면 그 묶음의 Gemini 결과가 `ready`이거나 `failed` 뒤 `read_writing_packet`으로 모든 쪽을 읽었을 때만 통과시키고 결과에 `writer`를 적는다(`_require_writer`). 안내문과 별도 도구(`generate_gemini_draft`)만 있을 때 Desktop의 Claude가 Gemini 단계를 건너뛰고 직접 써서 저장했다(2026-11-25). 그래서 Gemini 호출을 자료 확정 도구 안으로 옮기고 세 겹(확정 시 시작, 읽기 잠금, 저장 거부)으로 막는다.
 - **글쓰기 서브에이전트 — Gemini 4 Neon (High, 추론 높음)**: `DRAFT_WRITER=gemini`일 때 블로그 제목과 문안을 작성해 Claude에게 반환한다. 두 모델은 작성 지침(`core/writing_rules.py`)을 공유한다. Gemini는 참조로 연결된 같은 가이드(10절 내 글 예시 포함)·선택한 장소·공개 리뷰 분석을 사용하고, 겹침 검사용 본문 캐시는 읽지 않는다.
 - 설정은 `DRAFT_WRITER`(기본 `claude`), `AGY_PATH`, `AGY_MODEL`(코드 기본 `gemini-3.8-flash-medium`). 이 맥은 `.env`에서 `AGY_MODEL=gemini-4-neon-high`다. `agy acp`에서 지정 모델의 가용성을 확인하고 `session/set_model`로 고정한 뒤 같은 텍스트와 같은 JPEG 바이트를 순서대로 준다. 누락·한도 초과 시 중단하며 관찰 텍스트로 대체하지 않는다.
 - `agy acp`는 `--sandbox --disable-telemetry --include-default-customizations=false`와 임시 `--cli_dir_name`으로 띄우고 도구 권한 요청은 모두 거부한다. 생성 제한 250초. 응답 JSON(`{"title","parts":[{"slot","lines"}]}`)은 `gemini_writer`가 문안 자리와 대조해 블록으로 바꾼다.
@@ -27,7 +27,7 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 원인: 실제 `write_post` 한 번이 브라우저 입력, 사진·영상 업로드, 저장 확인까지 붙잡아 Claude Desktop의 도구 대기 시간(약 80초)을 넘겼다. 동기 파일 작업(`_media_inputs`, `overlap_warnings`)이 이벤트 루프를 막아 진행 알림도 늦었다.
 - 해결: `write_post`는 검증 뒤 `core/draft_jobs.py`에 작업을 만들고 `job_id`를 1초 안에 돌려준다. 브라우저 작업은 서버 안의 백그라운드 작업이 한다. `draft_status(job_id, wait_seconds≤10)`는 조회만 한다. 무거운 동기 작업은 `asyncio.to_thread`.
 - 상태: `running` / `saved` / `unconfirmed`(저장 버튼을 누른 뒤 확인 못 함, 한도에 셈) / `failed` / `unknown`(재시작 전 진행 중이던 작업). 같은 요청(digest)은 같은 작업을 돌려주고, 진행 중에 다른 글은 거부한다. 이력은 작업 ID별로 원자적으로(임시 파일 + `os.replace`) 쓰고, 깨진 JSON은 빈 목록으로 덮지 않고 예외로 멈춘다.
-- Gemini 문안도 같은 방식이다: `generate_gemini_draft` → `generation_id`, `gemini_draft_status`로 `ready`/`failed` 조회.
+- Gemini 문안도 같은 방식이다: `prepare_writing_packet`(gemini 모드) → `generation_id`, `gemini_draft_status`로 `ready`/`failed` 조회. 같은 묶음을 다시 확정해도 끝난 결과(실패 포함)를 그대로 돌려주고 재요청하지 않는다. agy가 없어도 `failed`로 기록해 대체 작성으로 넘어간다.
 
 ## 사진 폴더 규칙
 - 루트는 `MEDIA_ROOTS`(예: `~/Library/CloudStorage/GoogleDrive-<이메일>/내 드라이브/블로그사진`).
@@ -95,8 +95,8 @@ src/naver_blog_writer/
 │   ├── __init__.py       # TOOLS 목록(노출 순서)과 register_all()
 │   ├── get_style_guide.py  recent_posts.py  list_folders.py  scan_media.py  view_images.py
 │   ├── extract_video_frames.py  find_place.py  place_reviews.py  load_research.py  save_research.py
-│   ├── prepare_writing_packet.py  read_writing_packet.py   # 집필 자료 묶음 확정, 페이지 읽기(두 작성자 공통)
-│   ├── generate_gemini_draft.py  gemini_draft_status.py    # Gemini 문안 생성 접수와 조회
+│   ├── prepare_writing_packet.py  read_writing_packet.py   # 집필 자료 묶음 확정(gemini 모드면 생성 시작), 페이지 읽기
+│   ├── gemini_draft_status.py    # Gemini 문안 결과 조회
 │   ├── write_post.py  draft_status.py   # 접수, 입력, 검증, 저장 및 읽기 전용 상태 조회
 │   └── my_post_links.py  refresh_trends.py  check_setup.py  login_status.py  open_login_window.py  inspect_editor.py
 ├── prompts/              # MCP 프롬프트(+ 메뉴의 /write, /research). 파일명 = 프롬프트명
@@ -128,7 +128,7 @@ tests/mock_editor/         # 가짜 SmartEditor (빈 문단을 대체하는 블�
 - docstring이 Claude가 보는 도구 설명이다. 한국어로 언제 쓰는지와 주의점을 2~5줄로 쓴다.
 - 입력 검증 실패는 예외로 던진다. 브라우저 작업 실패는 `FAILED ...` 텍스트로 반환한다.
 - 이미지는 `mcp.server.fastmcp.Image`로 반환하고 한 번에 최대 10장, 긴 변 1024px 기본.
-- 작업 순서(스타일 가이드와 최근 글과 최신 경향 → `writing_ref`, 폴더 찾기와 확인, 스캔, 보기(`guide_ref`), 장소 찾기, 같은 장소 리뷰, 요청 시 내 글 링크, `prepare_writing_packet`, 작성자별 `read_writing_packet` 또는 `generate_gemini_draft`→`gemini_draft_status`, 사실 대조와 조립, dry_run, 임시저장 접수→`draft_status`)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
+- 작업 순서(스타일 가이드와 최근 글과 최신 경향 → `writing_ref`, 폴더 찾기와 확인, 스캔, 보기(`guide_ref`), 장소 찾기, 같은 장소 리뷰, 요청 시 내 글 링크, `prepare_writing_packet`, 작성자별 `read_writing_packet` 또는 `gemini_draft_status`, 사실 대조와 조립, dry_run, 임시저장 접수→`draft_status`)는 `server.py`의 `INSTRUCTIONS`와 `prompts/write.py`에 있다. 바꾸면 둘 다 고친다.
 - 파일, 이미지, ffmpeg처럼 오래 걸리는 동기 작업은 `asyncio.to_thread`로 돌린다. 오래 걸리는 도구는 `ctx.report_progress`로 진행 상황을 보낸다.
 - 사용자를 기다리는 도구(로그인)는 호출을 붙잡지 않는다. 창을 띄우고 바로 돌아온 뒤 상태 도구로 확인한다.
 

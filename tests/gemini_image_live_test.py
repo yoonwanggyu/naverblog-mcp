@@ -53,15 +53,12 @@ async def main(root: Path):
         brief = dict(guide_ref=ref, request="가상 메뉴판의 SAMPLE CODE를 사진에서 읽어 본문에 영어·숫자 그대로 적어 줘.",
                      facts=["가상 전시용 메뉴판"], user_updates=[], web_findings=[], visual_count=1,
                      slots=[{"kind": "text", "hint": "사진 속 코드를 정확히 소개"}, {"kind": "quote", "hint": "두 줄 마무리"}])
-        info = await obj("prepare_writing_packet", brief=brief)
-        pid = info["packet_id"]
-        text = (await call("read_writing_packet", packet_id=pid, page=0))[0].text
-        assert marker not in text and str(root) not in text
-        copy, = await call("read_writing_packet", packet_id=pid, page=1)
-        assert copy.data == seen.data
         start = time.monotonic()
-        receipt = await obj("generate_gemini_draft", packet_id=pid)
+        receipt = await obj("prepare_writing_packet", brief=brief)  # gemini 모드: 자료 확정과 동시에 Gemini 작성 시작
         accepted = time.monotonic() - start
+        pid = receipt["packet_id"]
+        assert receipt["writer"] == "gemini" and receipt["status"] == "running", receipt
+        copy = seen.data  # 묶음의 JPEG가 Claude가 본 것과 같은지는 gemini_writer_test가 해시로 확인합니다.
         state = receipt
         while state["status"] == "running":
             state = await obj("gemini_draft_status", generation_id=receipt["generation_id"], wait_seconds=10)
@@ -74,7 +71,7 @@ async def main(root: Path):
         assert marker in body, "모델이 사진의 표식을 정확히 읽지 못했습니다."
         plan = await call("write_post", title=d["title"], blocks=d["blocks"], dry_run=True)
         assert marker in plan[1].text and not (root / "home/post_history.json").exists()
-        print("PASS  실제 ACP 이미지 판독, MCP JPEG SHA256=" + hashlib.sha256(base64.b64decode(copy.data)).hexdigest() + ", dry_run, 실저장 0회")
+        print("PASS  실제 ACP 이미지 판독, MCP JPEG SHA256=" + hashlib.sha256(base64.b64decode(copy)).hexdigest() + ", dry_run, 실저장 0회")
 
 
 if __name__ == "__main__":

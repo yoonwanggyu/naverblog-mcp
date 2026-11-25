@@ -77,14 +77,21 @@ def fake_agy():
 
 async def test():
     from naver_blog_writer import config
-    from naver_blog_writer.core import blog_reader, notes, post_analysis, trends, writing_packet, writing_sources
+    from naver_blog_writer.core import (
+        blog_reader,
+        gemini_writer,
+        notes,
+        post_analysis,
+        trends,
+        writing_packet,
+        writing_sources,
+    )
     from naver_blog_writer.core.writing_packet import Brief, Slot
     from naver_blog_writer.core.writing_rules import COPY_RULES, PRIORITIES
     from naver_blog_writer.prompts.write import write
     from naver_blog_writer.server import INSTRUCTIONS, build_server
     from naver_blog_writer.tools import extract_video_frames, find_place, place_reviews
     from naver_blog_writer.tools.gemini_draft_status import gemini_draft_status
-    from naver_blog_writer.tools.generate_gemini_draft import generate_gemini_draft
     from naver_blog_writer.tools.get_style_guide import get_style_guide
     from naver_blog_writer.tools.load_research import load_research
     from naver_blog_writer.tools.prepare_writing_packet import prepare_writing_packet
@@ -148,8 +155,11 @@ async def test():
                     user_updates=["정정: 전시명은 종이학"], web_findings=["박물관 공식 안내: 종이학 전시"], visual_count=len(expected),
                     review_refs=[reviews["writing_ref"]], slots=[Slot(kind="text", hint="동선"),
                     Slot(kind="fill", hint="전시 감상"), Slot(kind="quote", hint="마무리")])
-    with patch.object(place_reviews.core, "load_recent_for_overlap", side_effect=AssertionError("본문 캐시 접근")):
+    # 묶음 내용 점검은 Claude 모드로 합니다(gemini 모드의 prepare는 Gemini 작성을 바로 시작하므로 아래에서 가짜 agy로 확인).
+    with patch.object(place_reviews.core, "load_recent_for_overlap", side_effect=AssertionError("본문 캐시 접근")), \
+            patch.object(config, "DRAFT_WRITER", "claude"):
         info = await prepare_writing_packet(brief)
+        assert info["writer"] == "claude" and "generation_id" not in info
         pid = info["packet_id"]
         prompt, = await read_writing_packet(pid, 0)
         pages = [await read_writing_packet(pid, n) for n in range(1, info["pages"])]
@@ -167,7 +177,8 @@ async def test():
     # 별도 글의 미리보기 개수는 이 글과 섞이지 않습니다.
     assert not writing_sources.collection((await get_style_guide(refresh=False))["writing_ref"]).images
     print("PASS  두 모델의 작성 지침과 가이드 일치, 긴 메모 보존, 확정 지점과 공개 분석만 연결")
-    assert {"generate_gemini_draft", "gemini_draft_status"} <= {t.name for t in await build_server().list_tools()}
+    names = {t.name for t in await build_server().list_tools()}
+    assert "gemini_draft_status" in names and "generate_gemini_draft" not in names  # Gemini 작성은 Claude가 따로 부르지 않습니다
 
     # Windows에서도 실행 가능한 가짜 CLI: 실제 파이프·argv·cwd 처리는 그대로 두고 실행 파일만 대체합니다.
     spawn = asyncio.create_subprocess_exec
@@ -181,44 +192,78 @@ async def test():
                            "--expected-text", hashlib.sha256(expected_text.encode()).hexdigest(), "--feature", feature,
                            "--expected-images", ",".join(hashlib.sha256(b).hexdigest() for b in expected), **kwargs)
 
+    async def rejected(packet_id, words, blocks=None):
+        blocks = blocks or [Block(type="text", text="Claude가 바로 쓴 글이에요")]
+        try:
+            await write_post("제목", blocks, dry_run=True, packet_id=packet_id)
+        except ValueError as e:
+            assert words in str(e), str(e)
+        else:
+            raise AssertionError(f"Gemini 단계 없이 write_post가 통과했습니다({packet_id})")
+
+    # Gemini 모드에서 Claude가 Gemini 단계를 건너뛰면 서버가 거부합니다(2026-11-25 Desktop 실행 재현).
+    await rejected(None, "작성자 설정이 gemini")
+    await rejected(pid, "기록이 없습니다")
     with patch.object(asyncio, "create_subprocess_exec", fake_exec):
-        receipt = await generate_gemini_draft(pid)
-        assert receipt["status"] == "running"
-        assert (await generate_gemini_draft(pid))["generation_id"] == receipt["generation_id"]
+        receipt = await prepare_writing_packet(brief)  # gemini 모드: 자료 확정과 동시에 Gemini 작성 시작
+        assert receipt["packet_id"] == pid and receipt["writer"] == "gemini" and receipt["status"] == "running", receipt
+        assert (await prepare_writing_packet(brief))["generation_id"] == receipt["generation_id"]
+        try:
+            await read_writing_packet(pid, 0)
+        except ValueError as e:
+            assert "Gemini가 씁니다" in str(e)
+        else:
+            raise AssertionError("Gemini 모드에서 Claude가 묶음을 읽고 직접 쓸 수 있습니다")
         state = await gemini_draft_status(wait_seconds=5)
         assert state["status"] == "ready", state
         draft = state["draft"]
-        assert (await generate_gemini_draft(pid))["status"] == "ready" and len(calls) == 1
+        assert (await prepare_writing_packet(brief))["status"] == "ready" and len(calls) == 1
         assert draft["blocks"][0]["text"] == "1관에 종이학이 있어요\n\n2관은 공사 중이었어요", draft["blocks"][0]
         blocks = [Block(**b) for b in draft["blocks"]]
-        plan = json.loads((await write_post(draft["title"], blocks, dry_run=True))[1])
+        plan = json.loads((await write_post(draft["title"], blocks, dry_run=True, packet_id=pid))[1])
+        assert plan["writer"] == "gemini", plan["writer"]
         assert plan["blocks"][1]["topic"] == "전시 감상" and plan["to_fill_before_publish"]["추천_문구_줄"] == 2
-        print("PASS  작성 자료와 문안 자리 → 접수·중복 방지 → 결과 회수 → 기존 dry_run")
+        print("PASS  Gemini 단계 건너뛰기 거부 → 작성 자료와 문안 자리 → 접수·중복 방지 → 결과 회수 → dry_run(writer=gemini)")
 
         for case in ("잘못된자리", "권한필드", "인증실패", "no_images", "no_model", "permission"):
             feature = case
-            fail_id = (await prepare_writing_packet(brief.model_copy(update={"request": "시범 자료 " + case})))["packet_id"]
-            expected_text, = await read_writing_packet(fail_id)
-            r = await generate_gemini_draft(fail_id)
+            r = await prepare_writing_packet(brief.model_copy(update={"request": "시범 자료 " + case}))
+            fail_id = r["packet_id"]
+            expected_text = writing_packet.get(fail_id).text  # 가짜 agy가 시작되기 전(다음 await 전)에 대조값을 정합니다.
             state = await gemini_draft_status(r["generation_id"], 5)
             assert state["status"] == "failed" and "draft" not in state, (case, state)
             need = {"no_images": "이미지 입력", "no_model": "지정 모델", "permission": "권한 요청"}.get(case)
             assert not need or need in state["message"], state
             assert state["packet_id"] == fail_id and "read_writing_packet" in state["fallback"], state
+            if case == "잘못된자리":  # 실패 뒤에는 같은 묶음을 모두 읽은 Claude 원고만 받습니다.
+                await rejected(fail_id, "read_writing_packet", blocks)
+                assert (await prepare_writing_packet(brief.model_copy(update={"request": "시범 자료 " + case})))["status"] == "failed"
+                for n in range(r["pages"]):  # 실패 뒤에는 열립니다. 같은 묶음을 다시 확정해도 Gemini에 재요청하지 않습니다.
+                    await read_writing_packet(fail_id, n)
+                fb = json.loads((await write_post(draft["title"], blocks, dry_run=True, packet_id=fail_id))[1])
+                assert fb["writer"].startswith("claude") and "대체" in fb["writer"], fb["writer"]
             if case in ("잘못된자리", "권한필드"):
                 assert Path(state["raw_saved"]).read_text(encoding="utf-8").startswith("원고입니다."), state
             if case == "권한필드":
                 assert "Extra inputs" in state["message"] or "path" in state["message"], state["message"]
+        with patch.object(config, "AGY_PATH", str(config.HOME / "no-agy")):  # agy가 없어도 failed가 기록되어 대체 작성으로 넘어감
+            r = await prepare_writing_packet(brief.model_copy(update={"request": "시범 자료 agy 없음"}))
+            state = await gemini_draft_status(r["generation_id"], 5)
+            assert state["status"] == "failed" and "agy를 찾을 수 없습니다" in state["message"], state
+            await read_writing_packet(r["packet_id"], 0)
         assert len(calls) == 7 and not config.HISTORY_PATH.exists()
         print("PASS  11개 JPEG와 텍스트 해시·순서 일치, 자리/필드 오류·CLI 종료·모델/이미지 미지원·권한 요청 시 중단")
 
         with patch.object(config, "DRAFT_WRITER", "claude"):
             try:
-                await generate_gemini_draft(pid)
+                await gemini_writer.start(pid)
             except ValueError as e:
                 assert "꺼져" in str(e)
             else:
                 raise AssertionError("Claude 모드에서 Gemini가 켜졌습니다")
+            again = await prepare_writing_packet(brief)  # Claude 모드: Gemini를 시작하지 않고 바로 읽습니다.
+            assert again["writer"] == "claude" and "generation_id" not in again
+            assert (await read_writing_packet(again["packet_id"], 0))[0] == prompt
         with patch.object(config, "READ_OTHER_BLOGS", False):
             off = await get_style_guide(refresh=False)
             off_prompt = writing_packet.freeze(brief.model_copy(update={"guide_ref": off["writing_ref"], "visual_count": 0})).text
@@ -262,10 +307,11 @@ async def test():
         assert "512KiB" in str(e)
     else:
         raise AssertionError("초과 텍스트가 조용히 생략됐습니다.")
-    text_info = await prepare_writing_packet(brief.model_copy(update={"guide_ref": fresh_ref, "visual_count": 0,
-                                                                       "place_refs": [], "review_refs": []}))
-    assert text_info["images"] == 0 and text_info["pages"] == 1
-    assert len(await read_writing_packet(text_info["packet_id"])) == 1
+    with patch.object(config, "DRAFT_WRITER", "claude"):  # 묶음 모양만 확인합니다(gemini 모드면 Gemini 작성이 시작됨).
+        text_info = await prepare_writing_packet(brief.model_copy(update={"guide_ref": fresh_ref, "visual_count": 0,
+                                                                           "place_refs": [], "review_refs": []}))
+        assert text_info["images"] == 0 and text_info["pages"] == 1
+        assert len(await read_writing_packet(text_info["packet_id"])) == 1
     print("PASS  한도 초과 시 부분 저장 없이 중단, 사진 없는 글은 텍스트 한 쪽만 확정")
 
 

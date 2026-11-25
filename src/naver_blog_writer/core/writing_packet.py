@@ -110,6 +110,22 @@ def freeze(brief: Brief) -> Packet:
     return packet
 
 
+# read_writing_packet으로 읽은 쪽: packet_id → (전체 쪽 수, 읽은 쪽). Gemini 실패 뒤 Claude가 묶음을 다 읽었는지 write_post가 확인합니다.
+_reads: dict[str, tuple[int, set[int]]] = {}
+
+
+def mark_read(packet_id: str, page: int) -> None:
+    total = 1 + len(get(packet_id).pages)
+    _reads.setdefault(packet_id, (total, set()))[1].add(page)
+    while len(_reads) > 8:
+        del _reads[next(iter(_reads))]
+
+
+def fully_read(packet_id: str) -> bool:
+    total, seen = _reads.get(packet_id, (0, set()))
+    return bool(total) and len(seen) == total
+
+
 def get(packet_id: str) -> Packet:
     p = _packets.get(packet_id)
     if not p or p.expires <= time.monotonic():

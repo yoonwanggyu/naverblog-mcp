@@ -38,11 +38,11 @@ flowchart LR
         direction TB
         S1["<b>① 가이드 준비</b><br/>get_style_guide → writing_ref<br/>내 글 5편 · 최신 경향 · 기본 가이드"]
         S2["<b>② 자료 수집</b> · guide_ref<br/>list_folders → scan_media<br/>view_images · extract_video_frames<br/>find_place → place_reviews<br/>load_research · my_post_links"]
-        S3["<b>③ 집필 자료 확정</b><br/>prepare_writing_packet → packet_id<br/>요청 · 메모 · 사실 · 본 JPEG 그대로"]
+        S3["<b>③ 집필 자료 확정</b><br/>prepare_writing_packet → packet_id<br/>요청 · 메모 · 사실 · 본 JPEG 그대로<br/>gemini 모드면 여기서 Gemini 작성 시작"]
         S4{"<b>④ 작성자</b><br/>DRAFT_WRITER"}
         S4A["claude<br/>read_writing_packet"]
-        S4B["gemini<br/>generate_gemini_draft<br/>⏳ gemini_draft_status"]
-        S5["<b>⑤ 조립 · 점검</b><br/>write_post · dry_run<br/>lint · 겹침 · 사진 순서"]
+        S4B["gemini<br/>⏳ gemini_draft_status<br/>Claude는 쓰지 않음"]
+        S5["<b>⑤ 조립 · 점검</b><br/>write_post · dry_run · packet_id<br/>작성자 확인 · lint · 겹침 · 사진 순서"]
         S6["<b>⑥ 임시저장</b><br/>write_post → job_id 1초 안에<br/>⏳ draft_status → saved"]
         S1 --> S2 --> S3 --> S4
         S4 -->|claude| S4A --> S5
@@ -86,14 +86,14 @@ flowchart LR
 |---|---|---|
 | ① 가이드 준비 | `get_style_guide(topic)` | 전체 가이드, 이번 글의 자료 번호 `writing_ref`, 작성자 `draft_writer` |
 | ② 자료 수집 | `list_folders` → `scan_media` → `view_images` · `extract_video_frames` → `find_place` → `place_reviews` (→ `load_research` · `my_post_links`) | 폴더 확인 질문, 촬영 시각순 목록, Claude가 본 JPEG, 장소 ID, 같은 장소 리뷰 분석. 모두 `guide_ref`로 이번 글 자료에 모임 |
-| ③ 자료 확정 | `prepare_writing_packet(brief)` | `packet_id`: 두 작성자가 똑같이 받는 텍스트와 이미지 |
-| ④ 문안 | claude: `read_writing_packet` / gemini: `generate_gemini_draft` → `gemini_draft_status` | 제목과 자리별 문안 |
-| ⑤ 점검 | `write_post(dry_run=true)` | 말투, 겹침, 사진 순서 경고. 고친 최종본만 다음 단계로 |
+| ③ 자료 확정 | `prepare_writing_packet(brief)` | `packet_id`: 두 작성자가 똑같이 받는 텍스트와 이미지. gemini 모드면 이 호출이 Gemini 작성을 바로 시작하고 `generation_id`를 돌려줌 |
+| ④ 문안 | claude: `read_writing_packet` / gemini: `gemini_draft_status`로 조회만 | 제목과 자리별 문안. gemini 모드에서 `read_writing_packet`은 Gemini가 `failed`일 때만 열림 |
+| ⑤ 점검 | `write_post(dry_run=true, packet_id)` | 말투, 겹침, 사진 순서 경고와 작성자 `writer`. gemini 모드에서 Gemini 결과가 없으면 거부. 고친 최종본만 다음 단계로 |
 | ⑥ 임시저장 | `write_post` → `draft_status(job_id)` | 1초 안에 접수, 조회로 진행 단계 확인, `saved`일 때만 성공 |
 
 | 누가 | 하는 일 | 하지 않는 일 |
 |---|---|---|
-| 🧠 Claude (메인) | 도구 호출 순서, 폴더와 장소 확인 질문, 자료 확정, 사실 대조, 사진·영상·지도·링크 조립, 점검과 저장 확인 | Gemini 모드에서 문안을 대신 쓰지 않음 |
+| 🧠 Claude (메인) | 도구 호출 순서, 폴더와 장소 확인 질문, 자료 확정, 사실 대조, 사진·영상·지도·링크 조립, 점검과 저장 확인 | Gemini 모드에서 문안을 대신 쓰지 않음(`write_post`가 `packet_id`의 Gemini 결과를 확인하고, 없으면 거부) |
 | ✍️ Gemini (서브) | 확정된 자료 묶음(Claude와 같은 텍스트, 같은 JPEG)으로 제목과 자리별 문안 작성 | 검색, 파일 읽기, 도구 호출, 저장, 재시도 |
 | 🧰 MCP 서버 | 파일 읽기, 축소 이미지, 네이버 지도·리뷰 읽기, 에디터 입력, 저장 작업과 상태 기록 | 이미지 인식, 발행 |
 
@@ -256,7 +256,7 @@ AGY_MODEL=gemini-4-neon-high
 
 Gemini는 `agy acp`의 지정 모델(`AGY_MODEL`)에서 한 번만 문안을 생성합니다. 텍스트만으로 대체하지 않습니다. 자료 묶음은 최근 4개, 최대 한 시간 메모리에 유지합니다. 글 하나당 JPEG 100장/12MiB, 텍스트 512KiB를 넘거나 확인한 이미지 수(`visual_count`)가 다르면 오류로 알립니다. 같은 사진을 다시 보면 묶음에는 한 번만 들어가고(같은 V번호) 한 장으로 셉니다. 더 크게 다시 봤으면 큰 미리보기로 바꿉니다. Claude가 검토하고 사진·지도를 조립해 기존 점검·저장을 진행합니다.
 
-`generate_gemini_draft`의 `generation_id`는 **글 생성** 접수 번호이고, `gemini_draft_status`의 `ready`는 문안만 완성됐다는 뜻입니다. 서버 메모리에 최근 생성 한 건을 두며 재시작하면 지워집니다. 네이버 임시저장 여부는 별도의 `draft_status`가 `saved`일 때만 확인됩니다. Gemini가 실패하면 다시 요청하지 않고, Claude가 실패 이유를 알린 뒤 같은 자료 묶음을 읽어 직접 씁니다. 실패한 응답 원문은 원인 확인용으로 `~/.naver-blog-writer/gemini_failed/`에만 최근 5개 남습니다. 처음부터 Claude만 쓰려면 `DRAFT_WRITER=claude`로 바꾸고 재시작하세요.
+Gemini 모드에서는 Claude가 Gemini를 따로 부르지 않습니다. `prepare_writing_packet`이 자료를 확정하면서 Gemini 작성을 바로 시작하고, Claude가 묶음을 직접 읽는 `read_writing_packet`은 Gemini가 실패했을 때만 열리며, `write_post`도 그 묶음의 Gemini 결과가 없으면 거부합니다. Gemini 작성은 최대 250초라 Claude Desktop의 도구 대기 시간(약 80초) 안에 끝나지 않으므로 접수와 조회로 나눕니다. `generation_id`는 **글 생성** 접수 번호이고, `gemini_draft_status`의 `ready`는 문안만 완성됐다는 뜻입니다. 서버 메모리에 최근 생성 한 건을 두며 재시작하면 지워집니다. 네이버 임시저장 여부는 별도의 `draft_status`가 `saved`일 때만 확인됩니다. Gemini가 실패하면 다시 요청하지 않고, Claude가 실패 이유를 알린 뒤 같은 자료 묶음을 읽어 직접 씁니다. 실패한 응답 원문은 원인 확인용으로 `~/.naver-blog-writer/gemini_failed/`에만 최근 5개 남습니다. 처음부터 Claude만 쓰려면 `DRAFT_WRITER=claude`로 바꾸고 재시작하세요.
 
 ### 발행 전에 할 일
 
@@ -282,8 +282,8 @@ Gemini는 `agy acp`의 지정 모델(`AGY_MODEL`)에서 한 번만 문안을 생
 | `place_reviews` | 같은 장소에 지도를 첨부한 최신 블로그 리뷰 10편 분석: 형식, 많이 다룬 내용과 덜 다룬 내용, 2곳 이상 일치하는 가격 같은 사실 후보, 다른 방문자들이 자주 말한 장점과 아쉬움(추천 문구 재료). 장소 글이면 필수 |
 | `write_post` | 제목과 블록(글, 직접 입력 자리와 추천 문구, 소제목, 마무리 상자, 구분선, 사진, 동영상, 지도, 내 글 링크 카드)을 가운데 정렬로 입력하고 임시저장. 사진과 영상은 촬영 시각순. 저장 완료를 확인한 뒤 보고 |
 | `draft_status` | `write_post`가 반환한 `job_id`로 진행 단계와 결과 확인. ID 생략 시 최근 작업. `running`이면 같은 ID로 조회(`wait_seconds=10`), `saved`일 때만 저장 성공 |
-| `generate_gemini_draft` · `gemini_draft_status` | Gemini 모드에서 글감으로 문안 생성 접수 및 결과 조회. 브라우저와 저장 이력은 사용하지 않음 |
-| `prepare_writing_packet` · `read_writing_packet` | 집필 자료 확정, 페이지별 읽기(0쪽 공통 텍스트, 이후 순서대로 JPEG). 두 모드에서 같은 `packet_id` 사용 |
+| `prepare_writing_packet` · `read_writing_packet` | 집필 자료 확정(gemini 모드면 Gemini 작성 시작), 페이지별 읽기(0쪽 공통 텍스트, 이후 순서대로 JPEG). gemini 모드에서 읽기는 Gemini 실패 때만 |
+| `gemini_draft_status` | Gemini 모드에서 `prepare_writing_packet`이 시작한 문안의 결과 조회. 브라우저와 저장 이력은 사용하지 않음 |
 | `my_post_links` | 내 블로그 글 목록(제목, 주소, 카테고리). 요청하면 글 끝에 다른 주제 글을 미리보기 카드로 넣을 때 사용 |
 | `recent_posts` | 겹침 비교 대상: 내 블로그 최근 글과 아직 발행 전인 임시저장 기록 |
 | `refresh_trends` | 네이버 주제별 인기글 15편으로 '최신 경향'을 바로 다시 만듦. 보통은 `get_style_guide`가 7일마다 자동으로 함 |
@@ -435,6 +435,7 @@ uvx ruff check src tests
 | `FAILED`와 스크린샷 | 같은 요청을 반복하지 말고 `~/.naver-blog-writer/errors`의 스크린샷 확인 후 `inspect_editor`로 진단 |
 | "작성 중인 글이 있습니다" 창 | 저장하지 않고 편집하다 만 내용이 있으면 뜸. 서버가 창이 뜰 때까지 기다렸다가 '취소'를 눌러 새 글로 시작하고 결과 `notes`에 알림. '저장' 목록의 임시저장 글은 그대로 남고 새 글은 따로 저장됨 |
 | 한글이 빠짐 | `TYPING_MODE=type` |
+| `write_post`가 "작성자 설정이 gemini입니다"로 거부 | Claude가 Gemini 원고 없이 저장하려 한 것. `prepare_writing_packet`(Gemini 작성 시작) → `gemini_draft_status`를 거친 뒤 그 `packet_id`로 다시 호출. 서버를 다시 시작하면 Gemini 결과가 사라지므로 생성부터 다시 |
 | Gemini 문안 `failed` | 이번 글은 Claude가 같은 자료로 직접 씀. 반복되면 `check_setup`으로 `agy` 경로와 로그인, `agy models`의 `AGY_MODEL` 확인. 형식 오류면 `~/.naver-blog-writer/gemini_failed/`의 원문과 오류 문구(어느 자리, 어떤 규칙)를 확인 |
 
 <br>

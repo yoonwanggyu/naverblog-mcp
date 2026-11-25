@@ -16,7 +16,18 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, model_validator
 
 from .. import config
-from ..core import archive, blog_reader, draft_jobs, editor, formatting, history, media, place_reviews
+from ..core import (
+    archive,
+    blog_reader,
+    draft_jobs,
+    editor,
+    formatting,
+    gemini_writer,
+    history,
+    media,
+    place_reviews,
+    writing_packet,
+)
 from ..core.browser import NotLoggedInError, browser_session
 
 log = logging.getLogger(__name__)
@@ -109,6 +120,30 @@ def _require_recent_style_sync() -> None:
         )
 
 
+def _require_writer(packet_id: str | None) -> str:
+    """DRAFT_WRITER=gemini면 그 packet_id의 Gemini 문안이 ready였거나, failed 뒤 Claude가 같은 묶음을 모두 읽었어야 합니다.
+    안내문만으로는 Claude가 Gemini 단계를 건너뛸 수 있어(2026-11-25 Desktop 실행) 서버에서 확인합니다. 작성자를 돌려줍니다."""
+    if config.DRAFT_WRITER != "gemini":
+        return "claude"
+    if not packet_id:
+        raise ValueError(
+            "작성자 설정이 gemini입니다(DRAFT_WRITER=gemini). Claude가 바로 쓰지 말고 prepare_writing_packet(Gemini 작성 시작) → "
+            "gemini_draft_status로 Gemini 원고를 받은 뒤, 그 packet_id를 write_post에 넣으세요."
+        )
+    state = gemini_writer.outcome(packet_id)
+    if state is None:
+        raise ValueError("이 packet_id로 Gemini 문안을 만든 기록이 없습니다(서버를 다시 시작하면 사라집니다). "
+                         "prepare_writing_packet으로 자료를 확정하면 Gemini 작성이 시작됩니다. gemini_draft_status로 결과를 확인하세요.")
+    if state == "running":
+        raise ValueError("Gemini 문안을 아직 만드는 중입니다. gemini_draft_status(generation_id, wait_seconds=10)로 ready나 failed를 확인하세요.")
+    if state == "failed":
+        if not writing_packet.fully_read(packet_id):
+            raise ValueError("Gemini 문안이 실패했습니다. 같은 packet_id를 read_writing_packet(packet_id, page=0..pages-1)로 "
+                             "모두 읽고 Claude가 직접 쓴 뒤 다시 호출하세요.")
+        return "claude (Gemini 실패 후 대체)"
+    return "gemini"
+
+
 def _require_place_reviews(blocks: list[Block]) -> list[str]:
     """장소 글은 장소마다 place_reviews로 같은 장소의 최신 리뷰를 먼저 읽어야 합니다(24시간 안).
     읽기에 실패한 기록이 있으면 막지 않고 안내만 돌려줍니다."""
@@ -182,12 +217,15 @@ async def write_post(
     dry_run: bool = False,
     force: bool = False,
     review_seconds: int = 5,
+    packet_id: str | None = None,
     ctx: Context | None = None,
 ) -> list:
     """네이버 블로그 에디터에 제목과 블록을 순서대로 입력하고 임시저장합니다. 발행은 하지 않습니다(코드에서 차단).
 
     - 먼저 get_style_guide를 호출해야 합니다(최근 게시물을 읽지 않았으면 거부합니다).
     - 장소 글은 장소마다 place_reviews를 먼저 호출해야 합니다(24시간 안의 기록이 없으면 거부, 읽기 실패 기록이면 안내만).
+    - packet_id: prepare_writing_packet의 packet_id. get_style_guide의 draft_writer가 gemini면 필수입니다. 그 묶음의 Gemini 문안이
+      ready였거나, failed 뒤 read_writing_packet으로 모든 쪽을 읽었을 때만 받습니다(Claude가 Gemini 단계를 건너뛰면 거부).
     - 맛 평가, 외관 후기, 분위기 감상, 느낀 점, 추천 여부 같은 주관 평가와 사진 속 음식의 이름과 설명은 쓰지 말고
       fill 블록(topic, suggestions 2~3개, 음식은 정식 메뉴명)을 넣습니다.
       '[이 부분에 직접 입력하시기 바랍니다]' 아래에 '(추천 문구)' 줄이 붙어 들어갑니다.
@@ -219,12 +257,13 @@ async def write_post(
         if active:
             return [json.dumps(active.snapshot(), ensure_ascii=False)]
     _require_recent_style_sync()
+    writer = _require_writer(packet_id)
     place_notes = _require_place_reviews(blocks)
 
     args = (title, blocks, tags, main_keyword, hook_pattern, sponsored, review_seconds, place_notes)
     if dry_run:
         await _progress(ctx, 0, 1, "미디어와 문구 점검")
-        plan = await _process(*args, job=None)
+        plan = {"writer": writer, **await _process(*args, job=None)}
         await _progress(ctx, 1, 1, "점검 완료")
         return ["검증 통과 (dry_run, 브라우저는 열지 않았습니다). lint_warnings와 overlap_warnings를 확인하고 고치세요.",
                 json.dumps(plan, ensure_ascii=False, indent=1)]
@@ -242,7 +281,7 @@ async def write_post(
 
     # 중복/한도 확인부터 작업 등록까지 await가 없어 동시 호출에도 두 번 접수되지 않습니다.
     job = draft_jobs.start(title, digest, work)
-    return [json.dumps({**job.snapshot(), "message": "임시저장 작업을 접수했습니다. 아직 저장 성공이 아닙니다. "
+    return [json.dumps({**job.snapshot(), "writer": writer, "message": "임시저장 작업을 접수했습니다. 아직 저장 성공이 아닙니다. "
                         "draft_status(job_id, wait_seconds=10)로 확인하세요."}, ensure_ascii=False)]
 
 
