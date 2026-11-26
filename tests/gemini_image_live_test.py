@@ -52,7 +52,8 @@ async def main(root: Path):
         seen, = (b for b in await call("view_images", paths=[str(source)], guide_ref=ref) if b.type == "image")
         brief = dict(guide_ref=ref, request="가상 메뉴판의 SAMPLE CODE를 사진에서 읽어 본문에 영어·숫자 그대로 적어 줘.",
                      facts=["가상 전시용 메뉴판"], user_updates=[], web_findings=[], visual_count=1,
-                     slots=[{"kind": "text", "hint": "사진 속 코드를 정확히 소개"}, {"kind": "quote", "hint": "두 줄 마무리"}])
+                     slots=[{"kind": "text", "hint": "사진 속 코드를 정확히 소개"}, {"kind": "fill", "hint": "메뉴판 느낌"},
+                            {"kind": "quote", "hint": "두 줄 마무리"}])
         start = time.monotonic()
         receipt = await obj("prepare_writing_packet", brief=brief)  # gemini 모드: 자료 확정과 동시에 Gemini 작성 시작
         accepted = time.monotonic() - start

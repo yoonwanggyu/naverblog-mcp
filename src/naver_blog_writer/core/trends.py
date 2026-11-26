@@ -120,6 +120,7 @@ def render(data: dict[str, Any]) -> str:
         f"| 본문 | 공백 제외 {a['chars']}자, {a['lines']}줄, 한 줄 {a['avg_line']}자 |",
         f"| 정렬 | 가운데 정렬 {a['center_posts']} |",
         f"| 사진 | {a['images']}장, 사진 사이 {a['lines_between_images']}줄, 최대 연속 {a['max_image_run']}장, 사진으로 시작 {a['first_block_image']} |",
+        f"| 사진 배치 | {post_analysis.layout_text(a.get('photo_layout', {}))} |",
         f"| 소제목 | {a['subtitles']}개, 질문형 {a['question_subtitles']}, 모양 {a['quote_styles']} |",
         f"| 자주 쓰인 소제목 | {', '.join(a['common_subtitles']) or '-'} |",
         f"| 지도 위치 | 앞쪽 {pl['front']}, 중간 {pl['middle']}, 끝 {pl['back']}, 없음 {pl['none']} |",

@@ -9,13 +9,13 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from .. import config
-from . import agy_acp, writing_packet
+from . import agy_acp, media, writing_packet
 from .writing_packet import LOCAL_OR_URL, Packet, Short
 
 # 빈 문자열 줄은 문단 사이 빈 줄입니다(가이드의 '생각이 바뀌는 곳에 빈 줄'). 실제 Gemini 원고에서 확인했습니다.
@@ -23,16 +23,58 @@ Line = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
 MAX_TEXT_LINES = 60
 
 
+Visual = Annotated[str, StringConstraints(pattern=r"^V[1-9]\d{0,3}$")]
+
+
 class Part(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     slot: int
+    visuals: list[Visual] = Field(default_factory=list, max_length=60)   # 이 글 바로 위에 놓을 사진(V번호)
+    layout: Literal["single", "strip", "collage", "slide"] | None = None
     lines: list[Line] = Field(min_length=1, max_length=MAX_TEXT_LINES)
+
+
+class Skip(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    visual: Visual
+    reason: Short
 
 
 class Copy(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: Short
-    parts: list[Part] = Field(min_length=1, max_length=100)
+    parts: list[Part] = Field(min_length=1, max_length=300)
+    skipped: list[Skip] = Field(default_factory=list, max_length=100)
+
+
+def _photo_blocks(packet: Packet, part: Part, kind: str, used: set[int]) -> list[dict]:
+    """원고의 사진 배치(visuals, layout)를 검사하고 image/gallery 블록으로 바꿉니다. 경로는 서버가 V번호로 찾아 넣습니다."""
+    if not part.visuals:
+        if part.layout:
+            raise ValueError(f"Gemini 원고의 {part.slot}번 자리에 layout만 있고 사진(visuals)이 없습니다.")
+        return []
+    if kind not in ("text", "fill", "subtitle"):
+        raise ValueError(f"Gemini 원고의 {part.slot}번 자리({kind})에는 사진을 놓을 수 없습니다. text, fill, subtitle 자리에만 놓습니다.")
+    idx = [int(v[1:]) - 1 for v in part.visuals]
+    for v, i in zip(part.visuals, idx, strict=True):
+        if not 0 <= i < len(packet.visuals):
+            raise ValueError(f"Gemini 원고의 {part.slot}번 자리에 없는 사진 번호 {v}가 있습니다.")
+        if packet.visuals[i][0] != "photo":
+            raise ValueError(f"Gemini 원고의 {v}는 영상 장면입니다. 영상은 사진 배치(visuals)에 넣지 않습니다.")
+        if i in used:
+            raise ValueError(f"Gemini 원고에 같은 사진 {v}가 두 번 놓였습니다.")
+        used.add(i)
+    paths = [packet.visuals[i][1] for i in idx]
+    layout = part.layout or ("single" if len(paths) == 1 else None)
+    if layout is None:
+        raise ValueError(f"Gemini 원고의 {part.slot}번 자리에 사진이 {len(paths)}장인데 layout이 없습니다.")
+    if layout == "single":
+        return [{"type": "image", "path": p} for p in paths]
+    if len(paths) < 2:
+        raise ValueError(f"Gemini 원고의 {part.slot}번 자리: {layout}은 사진 2장 이상입니다({len(paths)}장).")
+    # 한 자리에 한도(나란히 3장, 콜라주·슬라이드 10장)보다 많이 놓으면 같은 배치로 고르게 나눕니다(예: 필름 사진 29장 → 슬라이드 10·10·9).
+    most = media.STRIP_MAX if layout == "strip" else media.GROUP_MAX
+    return [{"type": "gallery", "layout": layout, "paths": chunk} for chunk in media.split_even(paths, most)]
 
 
 def _json_object(response: str) -> object:
@@ -81,7 +123,11 @@ def assemble(packet: Packet, response: str) -> dict:
     if [p.slot for p in copy.parts] != list(range(1, len(packet.slots) + 1)):
         raise ValueError("Gemini 응답의 문안 자리 개수나 순서가 다릅니다.")
     blocks = []
+    used: set[int] = set()
     for slot, part in zip(packet.slots, copy.parts, strict=True):
+        photo = _photo_blocks(packet, part, slot.kind, used)
+        if slot.kind != "subtitle":   # text·fill은 사진 다음에 글, subtitle은 제목 아래에 사진('필름카메라 컷' 같은 사진 구역)
+            blocks += photo
         part.lines = _clean_lines(slot.kind, part.lines)
         if not part.lines:
             raise ValueError(f"Gemini 원고의 {part.slot}번 자리가 비어 있습니다.")
@@ -95,9 +141,27 @@ def assemble(packet: Packet, response: str) -> dict:
             if (slot.kind == "subtitle" and len(part.lines) != 1) or (slot.kind == "quote" and not 2 <= len(part.lines) <= 4):
                 raise ValueError("Gemini 소제목은 한 줄, 마무리 상자는 2~4줄이어야 합니다.")
             blocks.append({"type": slot.kind, "text": "\n".join(part.lines)})
+            if slot.kind == "subtitle":
+                blocks += photo
     if LOCAL_OR_URL.search(copy.title) or "\n" in copy.title or "\r" in copy.title:
         raise ValueError("Gemini 제목에 경로·링크 또는 줄바꿈이 있습니다.")
-    return {"title": copy.title, "blocks": blocks}
+    photos = [i for i, (kind, _p) in enumerate(packet.visuals) if kind == "photo"]
+    skipped = {int(s.visual[1:]) - 1: s.reason for s in copy.skipped}
+    unplaced = [f"V{i + 1}" for i in photos if i not in used and i not in skipped]
+    return {"title": copy.title, "blocks": blocks,
+            "photo_layout": _layout_summary(blocks),
+            "skipped_photos": [{"visual": f"V{i + 1}", "reason": r} for i, r in skipped.items() if i not in used],
+            "unplaced_photos": unplaced}
+
+
+def _layout_summary(blocks: list[dict]) -> dict[str, int]:
+    """원고가 고른 배치: 배치별 블록 수."""
+    out: dict[str, int] = {}
+    for b in blocks:
+        key = "single" if b["type"] == "image" else b.get("layout") if b["type"] == "gallery" else None
+        if key:
+            out[key] = out.get(key, 0) + 1
+    return out
 
 
 def executable() -> str:

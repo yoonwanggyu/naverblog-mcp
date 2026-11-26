@@ -42,6 +42,9 @@ COLLECT_JS = r"""
     blocks: comps.map(c => ({
       k: kind(c),
       style: (c.className.match(/se-l-(\w+)/) || [, ''])[1],
+      // 사진 배치: single(개별), strip(나란히 2~3장), collage(콜라주), slide(슬라이드). 공개 글에서 확인한 클래스
+      lay: c.classList.contains('se-imageStrip') ? 'strip' : c.classList.contains('se-imageGroup')
+           ? (c.classList.contains('se-l-slide') ? 'slide' : 'collage') : (c.classList.contains('se-image') ? 'single' : ''),
       imgs: c.querySelectorAll('img.se-image-resource, .se-imageStrip img, .se-imageGroup img').length,
       text: kind(c) === 'subtitle' ? ((c.querySelector('.se-quote, .se-section-title') || c).innerText || '').trim() : '',
       paras: kind(c) === 'text' ? [...c.querySelectorAll('.se-text-paragraph')].map(p => ({
@@ -129,8 +132,12 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
     subtitles: list[str] = []
     q_styles: Counter = Counter()
     images = image_blocks = 0
+    layout: dict[str, dict[str, int]] = {}
+    single_run = max_single_run = 0
     for i, b in enumerate(blocks):
         k = b.get("k")
+        if k != "image":
+            single_run = 0 if k in ("text", "subtitle", "divider", "place") else single_run
         if k == "text":
             n = 0
             for p in b.get("paras") or []:
@@ -148,6 +155,12 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         elif k == "image":
             image_blocks += 1
             images += max(int(b.get("imgs") or 0), 1)
+            lay = b.get("lay") or "single"
+            slot = layout.setdefault(lay, {"blocks": 0, "photos": 0})
+            slot["blocks"] += 1
+            slot["photos"] += max(int(b.get("imgs") or 0), 1)
+            single_run = single_run + 1 if lay == "single" else 0
+            max_single_run = max(max_single_run, single_run)
             cur += max(int(b.get("imgs") or 0), 1)
             if seen_img:
                 gaps.append(acc)
@@ -183,6 +196,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "image_blocks": image_blocks,
         "lines_between_images": st.median(gaps) if gaps else None,
         "max_image_run": max(runs) if runs else 0,
+        "photo_layout": layout,              # 배치별 {blocks, photos}
+        "max_single_run": max_single_run,    # 글 없이 이어진 개별 사진 블록 최대 개수
         "first_block": first,
         "subtitles": subtitles,
         "quote_styles": dict(q_styles),
@@ -202,6 +217,38 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
 def _median(vals: list[Any], nd: int = 1) -> float | None:
     v = [x for x in vals if x is not None]
     return round(st.median(v), nd) if v else None
+
+
+LAYOUT_NAMES = {"single": "개별", "strip": "나란히", "collage": "콜라주", "slide": "슬라이드"}
+
+
+def layout_summary(stats: list[dict[str, Any]]) -> dict[str, Any]:
+    """사진 배치 집계: 배치마다 쓴 글 수, 전체 사진 중 비율, 블록당 사진 수(중간값). 옛 분석 기록(배치 없음)은 빼고 셉니다."""
+    known = [s for s in stats if "photo_layout" in s]
+    n = len(known)
+    total = sum(v["photos"] for s in known for v in s["photo_layout"].values())
+    out: dict[str, Any] = {"posts": n}
+    for key in LAYOUT_NAMES:
+        used = [s["photo_layout"][key] for s in known if key in s["photo_layout"]]
+        out[key] = {"posts": f"{len(used)}/{n}",
+                    "photo_share": round(sum(u["photos"] for u in used) / total, 2) if total else 0,
+                    "photos_per_block": _median([u["photos"] / u["blocks"] for u in used]) if used else None}
+    out["max_single_run"] = _median([s.get("max_single_run") for s in known], 0)
+    return out
+
+
+def layout_text(summary: dict[str, Any]) -> str:
+    """사람이 읽는 한 줄: '개별 10/10(78%) · 나란히 6/10(18%, 블록당 2.3장) ...'."""
+    if not summary or not summary.get("posts"):
+        return "-"
+    parts = []
+    for key, name in LAYOUT_NAMES.items():
+        v = summary.get(key) or {}
+        if v.get("posts", "0/").startswith("0/"):
+            continue
+        per = f", 블록당 {v['photos_per_block']}장" if key != "single" and v.get("photos_per_block") else ""
+        parts.append(f"{name} {v['posts']}({int(v['photo_share'] * 100)}%{per})")
+    return " · ".join(parts) + f" · 글 없이 이어진 개별 사진 최대 {summary.get('max_single_run')}장(중간값)"
 
 
 def aggregate(stats: list[dict[str, Any]]) -> dict[str, Any]:
@@ -228,6 +275,7 @@ def aggregate(stats: list[dict[str, Any]]) -> dict[str, Any]:
         "images": _median([s["images"] for s in stats], 0),
         "lines_between_images": _median([s["lines_between_images"] for s in stats]),
         "max_image_run": _median([s["max_image_run"] for s in stats], 0),
+        "photo_layout": layout_summary(stats),
         "first_block_image": f"{sum(1 for s in stats if s['first_block'] == 'image')}/{n}",
         "subtitles": _median([len(s["subtitles"]) for s in stats], 0),
         "question_subtitles": f"{sum(1 for s in stats for x in s['subtitles'] if x.rstrip().endswith('?'))}개",

@@ -26,6 +26,13 @@ class Collection:
     # 같은 사진(경로)과 같은 영상 장면(경로+JPEG 해시)은 한 번만 담습니다. 값은 images의 위치입니다.
     seen: dict[tuple[str, Path, str], int] = field(default_factory=dict)
 
+    def visual_sources(self) -> list[tuple[str, Path]]:
+        """V번호 순서(V1부터)의 (종류, 파일). photo는 사진 파일, video_frame은 영상 파일입니다. 서버 안에서만 씁니다."""
+        out: list[tuple[str, Path] | None] = [None] * len(self.images)
+        for (kind, path, _h), i in self.seen.items():
+            out[i] = (kind, path)
+        return [x for x in out if x]
+
     def asset(self, path: Path) -> str:
         return self.ids.setdefault(path, f"A{len(self.ids) + 1}")
 
@@ -46,8 +53,6 @@ class Collection:
             elif len(jpeg) > len(images[i]):
                 images[i] = jpeg
             slots.append((path, i))
-        if len(images) > 100 or sum(map(len, images)) > 12 * 1024**2:
-            raise ValueError("이 글의 미리보기 한도(100장 또는 JPEG 12MiB)를 넘습니다. 자료를 생략하지 않았습니다. 글을 나누어 주세요.")
         self.images, self.seen = images, seen
         for path, i in added:
             self.evidence.append({"kind": kind, "asset": self.asset(path), "visual": f"V{i + 1}"})

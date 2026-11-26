@@ -107,6 +107,35 @@ tpl = (Path(__file__).parent.parent / "style" / "style_guide.md").read_text(enco
 check("빈 틀(style_guide.md)은 11절로 붙지 않음", personal_rules(tpl) == "")
 check("규칙을 적으면 주석은 빼고 규칙만 붙음", personal_rules(tpl + "\n- 남자친구는 '오빠'라고 부름\n") == "## 규칙\n\n- 남자친구는 '오빠'라고 부름")
 
+# 사진 배치 미리보기와 가독성 경고: 배치 유형을 강요하지 않고 결과(사진만 길게 이어짐)만 봅니다.
+photo_blocks = [{"type": "text", "text": "점심 모음이에요\n다섯 곳이에요"}, {"type": "gallery", "layout": "strip", "paths": ["/x/만복1.jpg", "/x/만복2.jpg"]},
+                {"type": "text", "text": "국수가 나왔어요"}, {"type": "image", "path": "/x/a.jpg"}, {"type": "place", "query": "a"},
+                {"type": "image", "path": "/x/b.jpg"}, {"type": "gallery", "layout": "slide", "paths": ["/x/c.jpg", "/x/d.jpg", "/x/e.jpg"]},
+                {"type": "image", "path": "/x/f.jpg"}]
+pv = f.layout_preview(photo_blocks)
+check("배치 미리보기(모바일 순서)와 배치 요약", pv["layout_preview"][:3] == ["글 2줄", "[나란히 2장: 만복1 | 만복2]", "글 1줄"]
+      and pv["photo_layout"] == "나란히 1블록 2장 · 개별 3블록 3장 · 슬라이드 1블록 3장", str(pv))
+pw = [w for w in lint(photo_blocks) if "사진 블록" in w]
+check("사진 블록이 글 없이 4개 이어지면 가독성 경고(지도는 이어짐으로 봄)", len(pw) == 1 and "4개" in pw[0], str(pw))
+check("사진 블록 3개까지는 경고 없음", not [w for w in lint(photo_blocks[:-1]) if "사진 블록" in w])
+
+# 사진 촬영 시각으로 방문 시기를 추정한 줄, 사진은 있는데 fill이 없는 소제목 구역(2026-11-26 Gemini 시험 글에서 나온 문제)
+guess = [{"type": "subtitle", "text": "도락"}, {"type": "image", "path": "/x/도락.jpg"},
+         {"type": "text", "text": "도락은 1월 첫 평일 점심에 찾았어요\n보드람치킨은 2월 평일 저녁에 다녀온 곳이에요"},
+         {"type": "subtitle", "text": "솔솥"}, {"type": "gallery", "layout": "strip", "paths": ["/x/솔솥1.jpg", "/x/솔솥2.jpg"]},
+         {"type": "fill", "topic": "솔솥 맛", "suggestions": ["a", "b"]}]
+gw = lint(guess)
+check("사진 촬영 날짜로 방문 시기를 추정한 줄 경고", any("방문 시기를 추정한 줄 2개" in x for x in gw), str([x[:40] for x in gw]))
+check("사진은 있는데 fill이 없는 소제목 구역 경고(fill 있는 구역은 제외)", any("fill)가 없는 소제목 구역 1곳: ['도락']" in x for x in gw),
+      str([x[:60] for x in gw if "구역" in x]))
+check("폴더 이름의 날짜(연도 포함)를 쓴 줄은 추정 경고 없음",
+      not any("방문 시기" in x for x in lint([{"type": "text", "text": "2025년 3월 6일에 둘이 다녀온 후쿠오카예요"}])))
+check("메모처럼 시기 없이 쓴 줄은 경고 없음", not any("방문 시기" in x for x in lint([{"type": "text", "text": "자리가 넓어서 편했어요\n다음엔 저녁에 와 볼게요"}])))
+check("사진만 모은 구역('필름카메라 컷')은 fill 없어도 경고 없음",
+      not any("구역" in x for x in lint(guess[3:] + [{"type": "subtitle", "text": "필름카메라 컷"},
+                                                    {"type": "gallery", "layout": "slide", "paths": ["/x/필름1.jpg", "/x/필름2.jpg"]},
+                                                    {"type": "quote", "text": "끝\n댓글 주세요"}])))
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} 통과")
 sys.exit(1 if failed else 0)

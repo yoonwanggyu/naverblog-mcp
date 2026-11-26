@@ -28,7 +28,10 @@ HERE = Path(__file__).parent
 tmp = Path(tempfile.mkdtemp(prefix="nbw_test_"))
 media_dir = tmp / "media"
 media_dir.mkdir()
-for name, color in (("a.jpg", (40, 120, 200)), ("b.jpg", (200, 80, 40)), ("c.jpg", (20, 160, 60))):
+for name, color in (("a.jpg", (40, 120, 200)), ("b.jpg", (200, 80, 40)), ("c.jpg", (20, 160, 60)),
+                    ("만복1.jpg", (90, 90, 200)), ("만복2.jpg", (90, 200, 90)), ("만복3.jpg", (200, 90, 90)),
+                    ("식락1.jpg", (10, 10, 10)), ("식락2.jpg", (240, 240, 240)),
+                    ("핵밥1.jpg", (50, 50, 50)), ("핵밥2.jpg", (60, 60, 60)), ("핵밥3.jpg", (70, 70, 70))):
     Image.new("RGB", (800, 600), color).save(media_dir / name)
 import subprocess  # noqa: E402
 
@@ -102,6 +105,9 @@ BLOCKS = [
     Block(type="text", text=f"2층은 창가 자리가 길게 이어져 있어요. {PLACEHOLDER}"),
     Block(type="fill", topic="팡도르 맛", suggestions=["겉은 바삭하고 속은 촉촉했어요", "둘이 나눠 먹기 딱 좋은 크기였어요"]),
     Block(type="image", path=str(media_dir / "b.jpg")),
+    Block(type="gallery", layout="slide", paths=[str(media_dir / f"만복{n}.jpg") for n in (1, 2, 3)]),   # 3번째는 화면 밖 자리 이미지로 남는 슬라이드
+    Block(type="gallery", layout="collage", paths=[str(media_dir / "식락1.jpg"), str(media_dir / "식락2.jpg")]),
+    Block(type="gallery", layout="strip", paths=[str(media_dir / f"핵밥{n}.jpg") for n in (1, 2, 3)]),
     Block(type="video", path=str(media_dir / "clip1.mp4"), video_title="성수 카페어니언 영상", user_selected=True),
     Block(type="place", query="카페어니언 성수동", address="킨텍스로 255 상가234호"),
     Block(type="place", query="없는장소"),
@@ -172,7 +178,7 @@ async def main() -> int:
     doc = cap.get("doc") or []
     kinds = [d.get("cls", "img").split()[0] if "cls" in d else "img" for d in doc]
     seq = [k for k in kinds if k != "se-text"]
-    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-video", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
+    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-imageGroup", "se-imageGroup", "se-imageStrip", "se-video", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
                             "se-quotation", "se-oglink"], str(kinds))
     texts_before_card = [d.get("text", "") for d in doc[:-1]]
     check("내 글 링크: 주소 줄 아래 카드, 그 아래 태그", kinds[-2:] == ["se-oglink", "se-text"]
@@ -203,6 +209,14 @@ async def main() -> int:
     imgs = [d for d in doc if "img" in d]
     check("사진 업로드 완료 후 진행", len(imgs) == 2 and all(d["src"].startswith("uploaded.svg") for d in imgs), str([d.get("src") for d in imgs]))
     check("업로드 진행 팝업의 취소를 누르지 않음", cap.get("upload_canceled") is False)
+    groups = [d for d in doc if d.get("cls", "").startswith("se-imageGroup")]
+    check("그룹사진: 여러 장을 한 번에 골라 슬라이드 1블록(3장, 번호순), 콜라주 1블록(2장)",
+          len(groups) == 2 and "se-l-slide" in groups[0]["cls"] and "se-l-collage" in groups[1]["cls"]
+          and [n.split(".")[0][:3] for n in groups[0]["imgs"]] == ["만복1", "만복2", "만복3"] and len(groups[1]["imgs"]) == 2, str(groups))
+    strips = [d for d in doc if d.get("cls", "").startswith("se-imageStrip")]
+    check("나란히: 사진을 하나씩 넣고 끌어다 놓아 3장 한 줄(번호순), 선택 해제 후 끌기, 끝 가장자리 대신 안쪽에 놓기",
+          len(strips) == 1 and "se-imageStrip3" in strips[0]["cls"] and [n.split(".")[0][:3] for n in strips[0]["imgs"]] == ["핵밥1", "핵밥2", "핵밥3"],
+          str(strips))
     places = [d["text"] for d in doc if d.get("cls", "").startswith("se-placesMap")]
     check("주소가 같은 장소 선택(동 붙은 검색어 0건 → 상호명만)", len(places) == 2 and "킨텍스로 255" in places[0] and "본점" not in places[0], str(places))
     check("주소가 맞는 지점이 없으면 다른 지점을 넣지 않고 상호명만으로 다시 검색", len(places) == 2 and "킨텍스로 255" in places[1], str(places[1:]))
@@ -228,6 +242,28 @@ async def main() -> int:
         await btn.click()  # safe_click을 우회한 직접 클릭도 페이지 가드가 막아야 함
         check("페이지 수준 발행 차단", await frame.evaluate("window.__publishClicked !== true"),
               f"blocked={await frame.evaluate('window.__nbwBlocked')}")
+        await editor.focus_body_start(frame)
+        await editor.write_paragraphs(frame, [["업로드 오류 확인"]])
+        await editor.prepare_block_slot(frame)
+        await frame.evaluate("window.__uploadError = true")
+        try:
+            await editor.insert_gallery(frame, [media_dir / "a.jpg", media_dir / "b.jpg"], layout="slide", timeout_s=8)
+            check("사진 '파일 전송 오류' 창이 뜨면 저장 전에 멈춤", False, "통과해 버림")
+        except editor.EditorError as e:
+            check("사진 '파일 전송 오류' 창이 뜨면 저장 전에 멈춤", "파일 전송 오류" in str(e), str(e)[:80])
+    try:
+        await write_post(title=TITLE, blocks=[Block(type="text", text="도락은 1월 평일 점심에 찾았어요"),
+                                               Block(type="image", path=str(media_dir / "a.jpg"))], dry_run=True)
+        check("사진 글에 직접 입력 자리(fill)가 없으면 거부", False, "통과해 버림")
+    except ValueError as e:
+        check("사진 글에 직접 입력 자리(fill)가 없으면 거부", "fill" in str(e) and "추천 문구" in str(e), str(e)[:60])
+    for layout, bad in (("slide", [str(media_dir / "a.jpg")]), ("slide", [str(media_dir / "a.jpg")] * 11),
+                        ("strip", [str(media_dir / "a.jpg")] * 4), (None, [str(media_dir / "a.jpg")] * 2)):
+        try:
+            Block(type="gallery", layout=layout, paths=bad)
+            check("그룹사진 한도(나란히 2~3장, 그룹 2~10장)와 배치 필수", False, f"{layout} {len(bad)}장 통과")
+        except ValueError:
+            check("그룹사진 한도(나란히 2~3장, 그룹 2~10장)와 배치 필수", True, f"{layout} {len(bad)}장 거부")
 
     r = await write_post(title="두 번째 글 테스트 제목입니다", blocks=[Block(type="text", text="두 번째 글입니다. 짧아요.")],
                          main_keyword="두 번째 글", hook_pattern="인사형", review_seconds=0)

@@ -30,6 +30,10 @@ def write(folder_or_topic: str = "", title: str = "", outline: str = "", memo: s
 4. {COPY_RULES}
 5. 미확인 사실은 load_research나 웹 검색으로 확인한다. 내 다른 글 링크를 요청했으면 my_post_links를 호출한다.
 6. 사진과 영상은 scan_media의 order대로 배치한다. 영상이 여러 개면 video_question을 보여 주고 내가 고른 영상만 video 블록으로 넣는다.
+   사진 수를 스스로 줄이지 않는다(흐린 사진, 거의 같은 사진, 개인정보 사진만 빼고 이유를 알려 준다). 사진 배치(개별, 나란히, 콜라주, 슬라이드)는
+   photo_groups, post_kind, 내 글·같은 장소 리뷰·최신 경향의 photo_layout을 보고 가이드 4-6절 기준으로 고르고, dry_run의 layout_preview로
+   가독성을 확인한다. post_kind가 collection이면 가이드 5절 '모음집' 틀로 장소마다 짧게 쓴다. 고른 배치와 근거를 보고에 한 줄로 적는다.
+   camera_groups(핸드폰이 아닌 필름·DSLR 등 카메라 사진)는 본문 시간 흐름에 넣지 않고 마무리 상자 바로 위에 종류별로 소제목 '○○ 컷'과 사진 묶음으로 모은다(사진별 설명 없음).
 7. 필수 사실이 빠진 경우만 질문하고, 나머지는 바로 진행한다. 구성안 승인을 따로 받지 않는다.
 8. {GEMINI_HANDOFF}
    write_post(dry_run=true, main_keyword=..., hook_pattern=...)로 정리 결과를 확인한다. lint_warnings(마침표, 같은 어미 반복, 촬영 시각, 긴 줄 같은 말투 경고 포함)는 고칠 수 있는 만큼, overlap_warnings는 모두 고친다.

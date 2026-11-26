@@ -24,6 +24,7 @@ from urllib.parse import unquote_plus
 from playwright.async_api import Page
 
 from .. import config
+from . import post_analysis
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ _READ_POST_JS = """
     date: ((q('.se_publishDate') || q('.date') || {}).innerText || '').trim(),
     body: main.innerText,
     layout: comps.map(kind),
+    // 사진 블록마다 [배치, 장수]. 배치: single(개별), strip(나란히), collage(콜라주), slide(슬라이드). 사진이 아닌 블록은 null
+    photo_blocks: comps.map(c => kind(c) !== 'image' ? null : [
+      c.classList.contains('se-imageStrip') ? 'strip' : c.classList.contains('se-imageGroup')
+        ? (c.classList.contains('se-l-slide') ? 'slide' : 'collage') : 'single',
+      Math.max(c.querySelectorAll('img.se-image-resource, .se-imageStrip img, .se-imageGroup img').length, 1)]),
     subtitles: comps.filter(c => kind(c) === 'subtitle').map(c => c.innerText.trim()).filter(Boolean),
     images: main.querySelectorAll('.se-image img, .se-imageStrip img, .se-imageGroup img, img.se-image-resource, #postViewArea img').length,
     tags: [...new Set(tags)],
@@ -152,12 +158,30 @@ async def read_post(page: Page, blog_id: str, item: dict[str, Any]) -> dict[str,
         "tags": [t.lstrip("#") for t in tags],
         "image_count": int(data.get("images") or 0),
         "layout": data.get("layout", []),
+        **_photo_layout(data.get("layout", []), data.get("photo_blocks") or []),
         "body": body,
         "char_count": len(re.sub(r"\s", "", body)),
         "line_count": len(data.get("lines") or []),
         "avg_line_chars": round(sum(len(t) for t, _ in data["lines"]) / len(data["lines"]), 1) if data.get("lines") else None,
         "center_ratio": round(sum(a == "center" for _, a in data["lines"]) / len(data["lines"]), 2) if data.get("lines") else None,
     }
+
+
+def _photo_layout(kinds: list[str], photo_blocks: list[Any]) -> dict[str, Any]:
+    """post_analysis.layout_summary가 읽는 형태({photo_layout, max_single_run})로 만듭니다."""
+    layout: dict[str, dict[str, int]] = {}
+    run = best = 0
+    for k, pb in zip(kinds, photo_blocks, strict=False):
+        if pb:
+            lay, n = pb
+            slot = layout.setdefault(lay, {"blocks": 0, "photos": 0})
+            slot["blocks"] += 1
+            slot["photos"] += int(n)
+            run = run + 1 if lay == "single" else 0
+            best = max(best, run)
+        elif k in ("text", "subtitle", "divider", "place"):
+            run = 0
+    return {"photo_layout": layout, "max_single_run": best} if photo_blocks else {}
 
 
 def _sentences(text: str) -> list[str]:
@@ -185,6 +209,7 @@ def style_stats(posts: list[dict[str, Any]]) -> dict[str, Any]:
         "posts": n,
         "avg_chars": round(sum(p["char_count"] for p in posts) / n),
         "avg_images": round(sum(p["image_count"] for p in posts) / n, 1),
+        "photo_layout": post_analysis.layout_text(post_analysis.layout_summary(posts)),
         "avg_subtitles": round(len(subs) / n, 1),
         "question_subtitle_ratio": round(sum(s.rstrip().endswith("?") for s in subs) / len(subs), 2) if subs else None,
         "avg_sentence_chars": round(sum(len(s) for s in sents) / len(sents)) if sents else None,
@@ -231,6 +256,7 @@ def build_my_style(posts: list[dict[str, Any]], synced_at: str, blog_id: str) ->
     lines += [
         "## 요약 (최근 글 평균)",
         f"- 본문 길이: 공백 제외 약 {st['avg_chars']}자",
+        f"- 사진 배치: {st['photo_layout']}",
         f"- 사진: 글당 {st['avg_images']}장, 소제목: 글당 {st['avg_subtitles']}개"
         + (f" (질문형 비율 {int(st['question_subtitle_ratio'] * 100)}%)" if st.get("question_subtitle_ratio") is not None else ""),
         f"- 문장 길이: 평균 {st['avg_sentence_chars']}자, 이모지: 글당 {st['emoji_per_post']}개, 태그: 글당 {st['avg_tags']}개",

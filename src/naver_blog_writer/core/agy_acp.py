@@ -9,6 +9,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from .. import config
 from .writing_packet import Packet
 
 _SETTINGS = {"toolPermission": "strict", "permissions": {"deny": [f"{a}(*)" for a in
@@ -87,7 +88,7 @@ async def run(exe: str, model: str, packet: Packet) -> str:
                     cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL, limit=2**20)
         try:
-            return await asyncio.wait_for(turn(proc, cwd, model, packet), timeout=250)
+            return await asyncio.wait_for(turn(proc, cwd, model, packet), timeout=config.AGY_TIMEOUT_S)
         finally:
             if proc.stdin:
                 proc.stdin.close()

@@ -63,9 +63,18 @@ def fake_agy():
         assert json.loads(sys.stdin.readline())["result"]["outcome"]["outcome"] == "cancelled"
         return
     # 실제 Gemini 원고처럼 text 자리에 문단 사이 빈 줄("")을 넣고, 앞뒤에 설명과 코드 울타리를 붙입니다.
-    data = {"title": "[전시] 종이학 후기 🕊", "parts": [{"slot": 1, "lines": ["", "1관에 종이학이 있어요", "", "", "2관은 공사 중이었어요", ""]},
-            {"slot": 2, "lines": ["종이학이 눈에 들어왔어요", "접힌 선이 기억에 남아요"]},
-            {"slot": 3, "lines": ["궁금한 점 있으세요?", "댓글 남겨 주세요"]}]}
+    # 사진 배치도 Gemini가 정합니다: V1(사진), V3~V4는 나란히, V5~V9는 슬라이드, V10은 흐려서 뺌, V11은 놓지 않음. V2는 영상 장면.
+    data = {"title": "[전시] 종이학 후기 🕊", "parts": [
+            {"slot": 1, "visuals": ["V1", "V3", "V4"], "layout": "strip", "lines": ["", "1관에 종이학이 있어요", "", "", "2관은 공사 중이었어요", ""]},
+            {"slot": 2, "visuals": ["V5", "V6", "V7", "V8", "V9"], "layout": "slide", "lines": ["종이학이 눈에 들어왔어요", "접힌 선이 기억에 남아요"]},
+            {"slot": 3, "lines": ["궁금한 점 있으세요?", "댓글 남겨 주세요"]}],
+            "skipped": [{"visual": "V10", "reason": "흐림"}]}
+    if "영상자리" in prompt:
+        data["parts"][1]["visuals"] = ["V2", "V5", "V6"]
+    if "중복사진" in prompt:
+        data["parts"][1]["visuals"] = ["V1", "V6"]
+    if "나란히한장" in prompt:
+        data["parts"][0]["visuals"] = ["V1"]
     if "잘못된자리" in prompt:
         data["parts"][1]["slot"] = 3
     if "권한필드" in prompt:
@@ -155,6 +164,35 @@ async def test():
                     user_updates=["정정: 전시명은 종이학"], web_findings=["박물관 공식 안내: 종이학 전시"], visual_count=len(expected),
                     review_refs=[reviews["writing_ref"]], slots=[Slot(kind="text", hint="동선"),
                     Slot(kind="fill", hint="전시 감상"), Slot(kind="quote", hint="마무리")])
+    # 사진 글인데 직접 입력 자리(fill)가 없으면 확정하지 않습니다. 소제목 구역에 fill이 없으면 경고합니다.
+    try:
+        brief.model_copy(update={"slots": [Slot(kind="text", hint="동선"), Slot(kind="quote", hint="마무리")]}).model_validate(
+            {**brief.model_dump(), "slots": [{"kind": "text", "hint": "동선"}, {"kind": "quote", "hint": "마무리"}]})
+    except ValueError as e:
+        assert "fill" in str(e), str(e)
+    else:
+        raise AssertionError("fill 없는 사진 글 자료가 확정됐습니다")
+    sec = brief.model_copy(update={"slots": [Slot(kind="text", hint="도입"), Slot(kind="subtitle", hint="1관"), Slot(kind="text", hint="1관 사실"),
+                                             Slot(kind="subtitle", hint="2관"), Slot(kind="fill", hint="2관 감상"), Slot(kind="quote", hint="마무리")]})
+    assert sec.sections_without_fill() == ["1관"], sec.sections_without_fill()
+    # 소제목 자리에 놓은 사진은 소제목 바로 아래로 갑니다('필름카메라 컷' 같은 사진 구역). 글 자리 없는 구역은 fill 경고에서 뺍니다.
+    cam = writing_packet.Packet("p", "", (b"x", b"y", b"z"), (Slot(kind="text", hint="본문"), Slot(kind="fill", hint="감상"),
+                                Slot(kind="subtitle", hint="필름카메라 컷"), Slot(kind="quote", hint="마무리")), (),
+                                (("photo", "/a/IMG_1.jpg"), ("photo", "/a/필름_01.jpg"), ("photo", "/a/필름_02.jpg")), 0)
+    out = gemini_writer.assemble(cam, json.dumps({"title": "[여행 기록] 춘천 여행 🚞", "parts": [
+        {"slot": 1, "visuals": ["V1"], "lines": ["춘천에 다녀왔어요"]}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
+        {"slot": 3, "visuals": ["V2", "V3"], "layout": "slide", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
+    assert [b["type"] for b in out["blocks"]] == ["image", "text", "fill", "subtitle", "gallery", "quote"], out["blocks"]
+    # 한 자리에 한도보다 많이 놓으면 같은 배치로 고르게 나눕니다(필름 사진 12장 슬라이드 → 6+6, 나란히 4장 → 2+2).
+    many = writing_packet.Packet("p", "", (b"x",) * 16, (Slot(kind="text", hint="본문"), Slot(kind="fill", hint="감상"), Slot(kind="subtitle", hint="필름카메라 컷"),
+                                 Slot(kind="quote", hint="끝")), (), tuple(("photo", f"/a/f{i}.jpg") for i in range(16)), 0)
+    split = gemini_writer.assemble(many, json.dumps({"title": "[여행 기록] 춘천 여행 🚞", "parts": [
+        {"slot": 1, "visuals": [f"V{i}" for i in range(1, 5)], "layout": "strip", "lines": ["춘천에 다녀왔어요"]}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
+        {"slot": 3, "visuals": [f"V{i}" for i in range(5, 17)], "layout": "slide", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
+    assert [(b["type"], len(b.get("paths") or [])) for b in split["blocks"]] == [
+        ("gallery", 2), ("gallery", 2), ("text", 0), ("fill", 0), ("subtitle", 0), ("gallery", 6), ("gallery", 6), ("quote", 0)], split["blocks"]
+    assert brief.model_copy(update={"slots": [Slot(kind="text", hint="본문"), Slot(kind="fill", hint="감상"), Slot(kind="subtitle", hint="필름카메라 컷"),
+                                              Slot(kind="quote", hint="끝")]}).sections_without_fill() == []
     # 묶음 내용 점검은 Claude 모드로 합니다(gemini 모드의 prepare는 Gemini 작성을 바로 시작하므로 아래에서 가짜 agy로 확인).
     with patch.object(place_reviews.core, "load_recent_for_overlap", side_effect=AssertionError("본문 캐시 접근")), \
             patch.object(config, "DRAFT_WRITER", "claude"):
@@ -218,21 +256,30 @@ async def test():
         assert state["status"] == "ready", state
         draft = state["draft"]
         assert (await prepare_writing_packet(brief))["status"] == "ready" and len(calls) == 1
-        assert draft["blocks"][0]["text"] == "1관에 종이학이 있어요\n\n2관은 공사 중이었어요", draft["blocks"][0]
+        kinds = [(b["type"], b.get("layout")) for b in draft["blocks"]]
+        assert kinds == [("gallery", "strip"), ("text", None), ("gallery", "slide"), ("fill", None), ("quote", None)], kinds
+        assert draft["blocks"][1]["text"] == "1관에 종이학이 있어요\n\n2관은 공사 중이었어요", draft["blocks"][1]
+        assert draft["blocks"][0]["paths"] == [str(photo), str(others[0]), str(others[1])], draft["blocks"][0]
+        assert draft["photo_layout"] == {"strip": 1, "slide": 1} and draft["unplaced_photos"] == ["V11"] \
+            and draft["skipped_photos"] == [{"visual": "V10", "reason": "흐림"}], draft
+        for f in (photo, *others):   # 원고를 받은 뒤 dry_run 점검을 위해 사진 파일을 다시 둡니다(묶음은 원본을 다시 읽지 않음)
+            Image.new("RGB", (60, 60), "green").save(f)
         blocks = [Block(**b) for b in draft["blocks"]]
         plan = json.loads((await write_post(draft["title"], blocks, dry_run=True, packet_id=pid))[1])
         assert plan["writer"] == "gemini", plan["writer"]
-        assert plan["blocks"][1]["topic"] == "전시 감상" and plan["to_fill_before_publish"]["추천_문구_줄"] == 2
-        print("PASS  Gemini 단계 건너뛰기 거부 → 작성 자료와 문안 자리 → 접수·중복 방지 → 결과 회수 → dry_run(writer=gemini)")
+        assert plan["blocks"][3]["topic"] == "전시 감상" and plan["to_fill_before_publish"]["추천_문구_줄"] == 2
+        assert plan["photo_layout"] == "나란히 1블록 3장 · 슬라이드 1블록 5장" and plan["layout_preview"][0].startswith("[나란히 3장"), plan["layout_preview"]
+        print("PASS  Gemini 단계 건너뛰기 거부 → 작성 자료와 문안 자리 → 접수·중복 방지 → 결과 회수(사진 배치 포함) → dry_run(writer=gemini, 배치 미리보기)")
 
-        for case in ("잘못된자리", "권한필드", "인증실패", "no_images", "no_model", "permission"):
+        for case in ("잘못된자리", "권한필드", "인증실패", "no_images", "no_model", "permission", "영상자리", "중복사진", "나란히한장"):
             feature = case
             r = await prepare_writing_packet(brief.model_copy(update={"request": "시범 자료 " + case}))
             fail_id = r["packet_id"]
             expected_text = writing_packet.get(fail_id).text  # 가짜 agy가 시작되기 전(다음 await 전)에 대조값을 정합니다.
             state = await gemini_draft_status(r["generation_id"], 5)
             assert state["status"] == "failed" and "draft" not in state, (case, state)
-            need = {"no_images": "이미지 입력", "no_model": "지정 모델", "permission": "권한 요청"}.get(case)
+            need = {"no_images": "이미지 입력", "no_model": "지정 모델", "permission": "권한 요청", "영상자리": "영상 장면",
+                    "중복사진": "두 번", "나란히한장": "2장 이상"}.get(case)
             assert not need or need in state["message"], state
             assert state["packet_id"] == fail_id and "read_writing_packet" in state["fallback"], state
             if case == "잘못된자리":  # 실패 뒤에는 같은 묶음을 모두 읽은 Claude 원고만 받습니다.
@@ -251,7 +298,7 @@ async def test():
             state = await gemini_draft_status(r["generation_id"], 5)
             assert state["status"] == "failed" and "agy를 찾을 수 없습니다" in state["message"], state
             await read_writing_packet(r["packet_id"], 0)
-        assert len(calls) == 7 and not config.HISTORY_PATH.exists()
+        assert len(calls) == 10 and not config.HISTORY_PATH.exists()
         print("PASS  11개 JPEG와 텍스트 해시·순서 일치, 자리/필드 오류·CLI 종료·모델/이미지 미지원·권한 요청 시 중단")
 
         with patch.object(config, "DRAFT_WRITER", "claude"):
@@ -285,17 +332,25 @@ async def test():
             assert "경로" in str(e)
         else:
             raise AssertionError("경로가 글감에 포함됐습니다")
-        assert len(calls) == 7
+        assert len(calls) == 10
         print("PASS  Claude 모드, 다른 글 읽기 설정, 경로 전송 차단")
 
+    # 장수 제한은 없습니다(모음집 93장 등). Gemini 모드에서만 요청 크기(12MiB)를 넘으면 아무것도 보내지 않고 멈춥니다.
+    many_ref = (await get_style_guide(refresh=False))["writing_ref"]
+    many = writing_sources.collection(many_ref)
+    labels = many.previews([(media_root / f"p{n}.jpg", seen) for n in range(120)], "photo")
+    assert len(many.images) == 120 and labels[-1].endswith("/V120"), labels[-1]
+    big = brief.model_copy(update={"guide_ref": many_ref, "visual_count": 120, "place_refs": [], "review_refs": []})
+    with patch.object(writing_packet, "GEMINI_IMAGE_BYTES", 1000):
+        try:
+            writing_packet.freeze(big)
+        except ValueError as e:
+            assert "Gemini 요청" in str(e) and "빼지 않았고" in str(e), str(e)
+        else:
+            raise AssertionError("Gemini 요청 크기 초과가 조용히 넘어갔습니다.")
+        with patch.object(config, "DRAFT_WRITER", "claude"):
+            assert len(writing_packet.freeze(big).images) == 120  # Claude 모드에는 크기 제한을 두지 않습니다
     fresh_ref = (await get_style_guide(refresh=False))["writing_ref"]
-    fresh = writing_sources.collection(fresh_ref)
-    try:
-        fresh.previews([(media_root / f"p{n}.jpg", seen) for n in range(101)], "photo")
-    except ValueError as e:
-        assert "한도" in str(e) and not fresh.images
-    else:
-        raise AssertionError("초과 장수가 조용히 생략됐습니다.")
     dup = writing_sources.collection((await get_style_guide(refresh=False))["writing_ref"])
     assert dup.previews([(photo, b"small")], "photo") == ["A1/V1"]
     assert dup.previews([(photo, b"larger-jpeg"), (photo, b"x")], "photo") == ["A1/V1", "A1/V1"] and dup.images == [b"larger-jpeg"]
@@ -312,7 +367,7 @@ async def test():
                                                                            "place_refs": [], "review_refs": []}))
         assert text_info["images"] == 0 and text_info["pages"] == 1
         assert len(await read_writing_packet(text_info["packet_id"])) == 1
-    print("PASS  한도 초과 시 부분 저장 없이 중단, 사진 없는 글은 텍스트 한 쪽만 확정")
+    print("PASS  사진 장수 제한 없음(120장), Gemini 요청 크기 초과 시 부분 전송 없이 중단, 사진 없는 글은 텍스트 한 쪽만 확정")
 
 
 if __name__ == "__main__":

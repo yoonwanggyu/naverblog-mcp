@@ -14,6 +14,10 @@ async def prepare_writing_packet(brief: Brief) -> dict:
     작성자가 claude면 read_writing_packet(packet_id, page=0..pages-1)로 모두 읽고 씁니다. 네이버 저장은 없습니다."""
     p = writing_packet.freeze(brief)
     out = {"packet_id": p.packet_id, "images": len(p.images), "pages": 1 + len(p.pages), "writer": config.DRAFT_WRITER}
+    missing = brief.sections_without_fill()
+    if missing:
+        out["slot_warnings"] = (f"직접 입력 자리(fill)가 없는 소제목 구역 {len(missing)}곳: {missing[:5]}. 그 구역에 사진이 있으면 "
+                                "fill 자리를 넣어 다시 확정하세요(추천 문구 자리 없이 맡기면 사진으로 경험을 추정해 씁니다).")
     if config.DRAFT_WRITER != "gemini":
         return {**out, "next": "read_writing_packet(packet_id, page=0..pages-1)로 모두 읽고 Claude가 씁니다."}
     receipt = await gemini_writer.start(p.packet_id)

@@ -18,9 +18,9 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - **메인 에이전트 — Claude**: 검색·도구 호출·장소 선택을 담당한다. 이번 가이드 참조로 사진·영상 장면과 노트를 모은 뒤 요청·메모·정정·외부 검색 근거·문안 자리를 `prepare_writing_packet`으로 확정한다. 두 모드 모두 이 묶음만 집필 근거로 쓴다. Claude 직접 작성은 `read_writing_packet` 전체 페이지를 쓴다. Gemini 모드에서는 `prepare_writing_packet`이 자료를 확정하면서 Gemini 작성을 바로 시작하고(`generation_id` 반환, Claude가 Gemini를 따로 부르는 도구는 없다), `read_writing_packet`은 Gemini가 `failed`일 때만 열린다. `ready` 원고의 사실을 대조하고 첨부를 조립한 뒤 `dry_run`과 임시저장을 진행한다. Gemini가 `failed`면 다시 요청하지 않고 사용자에게 이유를 한 줄로 알린 뒤, 같은 `packet_id`를 `read_writing_packet`으로 읽어 Claude가 직접 쓴다(이후 단계 동일, `gemini_writer.FALLBACK`). `write_post`(dry_run 포함)는 `packet_id`를 받아, `DRAFT_WRITER=gemini`면 그 묶음의 Gemini 결과가 `ready`이거나 `failed` 뒤 `read_writing_packet`으로 모든 쪽을 읽었을 때만 통과시키고 결과에 `writer`를 적는다(`_require_writer`). 안내문과 별도 도구(`generate_gemini_draft`)만 있을 때 Desktop의 Claude가 Gemini 단계를 건너뛰고 직접 써서 저장했다(2026-11-25). 그래서 Gemini 호출을 자료 확정 도구 안으로 옮기고 세 겹(확정 시 시작, 읽기 잠금, 저장 거부)으로 막는다.
 - **글쓰기 서브에이전트 — Gemini 4 Neon (High, 추론 높음)**: `DRAFT_WRITER=gemini`일 때 블로그 제목과 문안을 작성해 Claude에게 반환한다. 두 모델은 작성 지침(`core/writing_rules.py`)을 공유한다. Gemini는 참조로 연결된 같은 가이드(10절 내 글 예시 포함)·선택한 장소·공개 리뷰 분석을 사용하고, 겹침 검사용 본문 캐시는 읽지 않는다.
 - 설정은 `DRAFT_WRITER`(기본 `claude`), `AGY_PATH`, `AGY_MODEL`(코드 기본 `gemini-3.8-flash-medium`). 이 맥은 `.env`에서 `AGY_MODEL=gemini-4-neon-high`다. `agy acp`에서 지정 모델의 가용성을 확인하고 `session/set_model`로 고정한 뒤 같은 텍스트와 같은 JPEG 바이트를 순서대로 준다. 누락·한도 초과 시 중단하며 관찰 텍스트로 대체하지 않는다.
-- `agy acp`는 `--sandbox --disable-telemetry --include-default-customizations=false`와 임시 `--cli_dir_name`으로 띄우고 도구 권한 요청은 모두 거부한다. 생성 제한 250초. 응답 JSON(`{"title","parts":[{"slot","lines"}]}`)은 `gemini_writer`가 문안 자리와 대조해 블록으로 바꾼다.
+- `agy acp`는 `--sandbox --disable-telemetry --include-default-customizations=false`와 임시 `--cli_dir_name`으로 띄우고 도구 권한 요청은 모두 거부한다. 생성 제한 `AGY_TIMEOUT_S`(기본 900초, 250초일 때 93장·138자리 모음집이 시간 초과). 응답 JSON(`{"title","parts":[{"slot","lines"}]}`)은 `gemini_writer`가 문안 자리와 대조해 블록으로 바꾼다.
 - Gemini 원고의 `text` 자리는 문단 사이 빈 줄을 `""`로 넣는다(가이드의 '생각이 바뀌는 곳에 빈 줄'). 줄 형식은 빈 문자열을 허용하고 `text`는 60줄까지, fill/subtitle/quote는 빈 줄을 뺀 뒤 개수를 센다. 이 빈 줄을 1글자 이상으로 막아 두어 실제 원고가 모두 '형식 오류'로 거부됐다(가짜 agy와 실모델 테스트는 한두 줄짜리 원고라 놓침, 2026-11-25). 앞뒤 설명 문장과 코드 울타리는 허용하고 JSON 객체는 하나만 받는다. 실패한 원문은 `NBW_HOME/gemini_failed/`에 최근 5개만 남는다.
-- 자료 모음(`writing_sources`)은 `get_style_guide`의 `writing_ref`마다 이미지 100장, 12MiB까지. `view_images`와 `extract_video_frames`는 `guide_ref`가 필수다. 같은 사진(경로)과 같은 영상 장면(경로+JPEG 해시)은 한 번만 담고 같은 V번호를 돌려준다. 더 크게 다시 본 사진은 그 자리의 JPEG만 큰 것으로 바꾼다. `visual_count`는 서로 다른 V번호 개수다.
+- 자료 모음(`writing_sources`)은 `get_style_guide`의 `writing_ref`마다 모은다. 장수 제한은 없다(`view_images`가 10장마다 약 900KB로 줄임). Gemini 모드에서만 묶음 확정 때 JPEG 합계 12MiB(`writing_packet.GEMINI_IMAGE_BYTES`, Gemini 요청 크기 한계)를 넘으면 아무것도 보내지 않고 멈춘다. `view_images`와 `extract_video_frames`는 `guide_ref`가 필수다. 같은 사진(경로)과 같은 영상 장면(경로+JPEG 해시)은 한 번만 담고 같은 V번호를 돌려준다. 더 크게 다시 본 사진은 그 자리의 JPEG만 큰 것으로 바꾼다. `visual_count`는 서로 다른 V번호 개수다.
 - 자료 묶음(`writing_packet`)은 텍스트 512KiB 이하, 경로와 URL 없음, `packet_id`는 sha256, 최근 4개를 1시간 메모리에 둔다. Gemini 생성 결과는 최근 1건만 메모리에 두고 재시작하면 사라진다.
 
 ## 80초 응답 없음 문제와 접수·조회 구조
@@ -33,6 +33,9 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 - 루트는 `MEDIA_ROOTS`(예: `~/Library/CloudStorage/GoogleDrive-<이메일>/내 드라이브/블로그사진`).
 - 글 1편 = 폴더 1개. 이름에 장소명과 날짜가 있으면 형식은 자유다(`젠스시(26.11.14)`, `2026-11-15_성수데이트`, `놀숲 11.17` 등). 날짜가 없으면 첫 사진의 EXIF 촬영일을 쓴다.
 - 하루 여러 장소는 하위 폴더 `1_장소`, `2_장소`. 하위 폴더는 상위 폴더의 날짜를 물려받는다.
+- **카메라 컷:** 핸드폰이 아닌 카메라 사진은 `media.camera_kind()`가 가린다. ① 파일 이름(NFC 정규화 후)의 `필름`·`film`·`DSLR`·`미러리스`·`디카` ② EXIF 제조사·모델: 필름 스캐너(NORITSU, Frontier 등)는 필름카메라, 카메라 제조사는 기종으로 DSLR·미러리스·카메라. 핸드폰은 제외. `scan_media`가 `camera_groups`(종류별, 촬영 순서)로 돌려주고, 글에서는 본문 시간 흐름에 넣지 않고 **마무리 상자 바로 위**에 종류별 소제목 '○○ 컷'과 사진 묶음으로 모은다(사진별 설명 없음, 배치는 작성자가 고름, 이 구역은 fill 경고 제외). 카메라 사진은 시간 순서 검사와 이름 묶음에서 빠진다. 실제 폴더: 춘천 133장 중 Canon EOS 5D Mark II 102장(DSLR), 후쿠오카_Day1 36장 중 필름 스캔 29장. Drive의 한글 파일 이름은 NFD라 `find -iname`으로는 안 잡힌다. 필름 스캔의 시각 정보는 스캔 시각이라 필름 묶음은 파일 번호순(번호 없는 첫 장이 1번, `_film_key`), 스캔 결과의 같은 시각은 숫자순(`natural_key`)으로 정렬한다(후쿠오카에서 22 → 26 → 11로 섞였음).
+- Gemini 원고의 subtitle 자리 `visuals`는 소제목 바로 아래에 놓인다(카메라 컷 구역). 한 자리에 한도(나란히 3장, 콜라주·슬라이드 10장)보다 많이 놓으면 같은 배치로 고르게 나눈다(`media.split_even`, 29장 → 10·10·9). 이름 묶음 안이 파일 번호순이 아니면 경고한다(실제 Gemini 원고에서 '오한수우육면관2 → 1 → 3').
+- 사진 이름이 같고 끝 번호만 다르면(`만복국수집1~3`, `뽀끼당`과 `뽀끼당2`, `JTBC구내식당 (2)`) 한 묶음이다(`media.photo_groups`, 묶음 안은 번호순, 10장씩 나눔). 카메라 기본 이름(IMG_, PXL_, KakaoTalk_, 스크린샷, 날짜 숫자)은 묶지 않는다. 서로 다른 장소 이름이 5개 이상이고 사진 대부분에 붙어 있으면 `scan_media`가 `post_kind: collection`(모음집) 힌트를 준다. 글 유형 판단은 Claude가 요청과 함께 한다.
 - 폴더 이름의 날짜와 장소명, `find_place` 결과(주소, 업종, 전화)는 사실로 취급한다. 그 밖의 사실은 메모, 리서치 노트, 웹 검색 확인값만 쓴다.
 - 날짜 해석은 `core/dates.py`(폴더 이름과 사용자 입력 공통), 폴더 검색과 오타 비교와 확인 질문은 `core/folders.py`. 정확히 하나만 일치할 때만 바로 진행하고, 그 밖에는 "이게 맞습니까?" 확인 전에 `scan_media`가 읽지 않는다.
 
@@ -50,12 +53,15 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
   2와 3은 `READ_OTHER_BLOGS=false`면 읽지 않고 장소 리뷰 필수 확인도 끈다. 같은 장소 리뷰 파일은 24시간 뒤 `purge_expired()`가 지우고, 경향 파일에는 글 주소를 저장하지 않는다.
   다른 사람 글의 문장, 제목, 소제목을 글에 쓰지 않는다(`archive.overlap_warnings`가 같은 장소 리뷰와 거의 같은 문장을 한 문장부터 경고).
 - `write_post`는 최근 게시물을 읽은 지 `STYLE_SYNC_MAX_AGE_MIN`분이 지났으면 거부한다. 이 조건을 도구 인자로 우회할 수 없게 둔다.
+- **사진 수를 제한하지 않는다.** 서버에 글당 장수 상한을 두지 않고(`MAX_IMAGES_PER_POST` 삭제), Claude·Gemini도 스스로 줄이지 않는다(흐린 사진, 거의 같은 사진, 개인정보 사진만 빼고 보고). 이 한도 30장 때문에 93장 모음집이 30장만 올라가고 '1탄'으로 쪼개졌다(2026-11-26). 가이드 4-6절의 장수는 상위 블로그 참고값일 뿐이다.
+- **사진 배치는 작성자(Claude 또는 Gemini)가 글마다 정한다. 서버는 기본값을 두지 않는다.** 배치는 네 가지: 개별(`image`), 나란히(`gallery` `strip` 2~3장, `editor.insert_strip`), 콜라주·슬라이드(`gallery` `collage`/`slide` 2~10장, `editor.insert_gallery`). `gallery`는 `layout`이 필수다. 판단 재료는 사진 이름 묶음(`photo_groups`), 글 유형(`post_kind`), 사진 내용, 다른 글의 배치 분석(`photo_layout`: 10절 내 글, `place_reviews` 같은 장소 리뷰, 부록 B 최신 경향)이고 부딪치면 0절 순서. 기준표는 가이드 4-6절. 서버는 한도(나란히 3장, 그룹 10장, 촬영 순서, 사진 중복)만 검사하고, `dry_run`이 `layout_preview`(모바일 화면 순서)와 `photo_layout` 요약, '사진 블록 4개 이상 글 없이 이어짐' 경고를 돌려준다. 가독성 판단은 저장 전 `dry_run`에서 한다(저장 후 화면 캡처 검증은 하지 않음). 모음집은 가이드 5절 '모음집' 틀.
+- 배치 분석(`post_analysis.layout_summary`/`layout_text`): 공개 글의 사진 블록 클래스로 나눈다. `se-image`=개별, `se-imageStrip`(`se-imageStrip2/3`)=나란히, `se-imageGroup se-l-collage`=콜라주, `se-imageGroup se-l-slide`=슬라이드. 글마다 배치별 블록·장수와 '글 없이 이어진 개별 사진 최대 수', 집계는 배치별 사용 글 수·사진 비율·블록당 장수. 같은 장소 리뷰 40편 조사에서 개별 426블록, 나란히 60, 콜라주 7, 슬라이드 1(2026-11-26).
 - 사진은 `scan_media`의 `order`(촬영 시각순: EXIF 원본 시각과 시간대 → 파일 이름 날짜 → 파일 수정 시각, `media.capture_time()`)대로 넣는다. 영상은 `com.apple.quicktime.creationdate`(아이폰 실제 촬영 시각)를 `creation_time`(Drive 업로드 때 바뀜)보다 먼저 읽는다.
 - 영상은 `video` 블록으로 그대로 올린다(`media.prepare_video_for_upload()`가 재인코딩 없이 위치 정보 메타데이터를 지운 사본). 폴더에 영상이 2개 이상이면 `scan_media`의 `video_question`으로 사용자에게 고르게 하고, `user_selected=true`가 없으면 `write_post`가 거부한다.
 - 이모지는 적극적으로(글당 12~25개, `default.md` 3-1절). 10절 내 스타일보다 이 절이 우선한다. 적거나 한 줄에 몰리면 lint가 경고한다. 두 사람이 같은 Drive 폴더에 올리므로 파일 이름순을 쓰지 않는다. 순서가 다르면 `write_post`가 경고만 한다(대표 사진, 영상 장면 제외).
 - 내 블로그 다른 글 링크(`link` 블록, `my_post_links`)는 사용자가 요청할 때만 마무리 상자 뒤에 넣는다. 내 블로그 주소만 허용한다(`Block` 검증).
 - 사진 속 음식의 이름과 설명도 본문에 쓰지 않고 fill로 넣는다(추천 문구에 정식 메뉴명). 제목에 음식 이름을 넣지 않는다. 글 끝은 `quote` 블록(말풍선, 포스트잇, 프레임)이다.
-- 주관 평가(맛, 외관 후기, 분위기, 느낀 점, 추천)는 쓰지 않고 `fill` 블록으로 `[이 부분에 직접 입력하시기 바랍니다]`(`formatting.PLACEHOLDER`)와 그 아래 `(추천 문구)` 줄 2~3개를 넣는다. 추천 문구는 사용자가 고르는 예시이고 사실로 쓰지 않는다. 사용자 메모의 평가만 `text`로 그대로 쓴다.
+- 주관 평가(맛, 외관 후기, 분위기, 느낀 점, 추천)는 쓰지 않고 `fill` 블록으로 `[이 부분에 직접 입력하시기 바랍니다]`(`formatting.PLACEHOLDER`)와 그 아래 `(추천 문구)` 줄 2~3개를 넣는다. 추천 문구는 사용자가 고르는 예시이고 사실로 쓰지 않는다. 사용자 메모의 평가만 `text`로 그대로 쓴다. 사진 글에 fill이 하나도 없으면 `prepare_writing_packet`(Brief 검증)과 `write_post`가 거부하고, 사진은 있는데 fill이 없는 소제목 구역은 경고한다(`slot_warnings`, lint). 사진 촬영 날짜·시각은 순서용이며 방문 시기·끼니·횟수를 추정해 본문에 쓰지 않는다(lint `CAPTURE_GUESS`). fill 자리 없이 Gemini에 맡긴 시험 글이 추천 문구 없이 '도락은 1월 첫 평일 점심에 찾았어요' 같은 줄로 채워졌다(180줄 중 74줄, 2026-11-26).
 - 저장은 완료 신호(알림, 저장 글 수, 저장 응답)를 확인한 뒤에만 성공으로 보고한다. 미확인 저장도 하루 한도와 중복 방지에 센다.
 - 실제 `write_post`는 서버 안에서 작업 하나를 시작하고 접수 ID를 즉시 반환한다(`dry_run`은 기존처럼 점검 결과 반환). `draft_status(job_id, wait_seconds=10)`로 조회만 반복하고 `saved`일 때만 저장을 보고한다. 응답을 놓치면 `draft_status()`로 최근 작업을 찾는다. 서버 재시작 뒤에는 이력에서 확인 가능한 결과만 보여 주며 자동 재시도하지 않는다.
 - 실계정 테스트는 임시저장까지만, 하루 1~2건만 한다. `~/.naver-blog-writer/browser-profile`은 읽거나 커밋하지 않는다.
@@ -69,11 +75,11 @@ Claude Desktop에 stdio 서버로 등록해서 쓴다. 사용자는 경로가 �
 ## 명령어
 ```bash
 uv sync                                                    # .venv 생성 (uv.lock 기준)
-BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 47항목 (네이버 접속 없음)
-uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진과 영상 촬영 시각 정렬 25항목
-BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰(감상 줄 포함), 최신 경향, 다른 블로그 끄기 31항목
+BROWSER_CHANNEL=chrome uv run python tests/mock_editor_test.py   # 가짜 에디터 회귀 테스트 55항목(나란히 끌어다 놓기, 그룹사진, 업로드 오류 포함, 네이버 접속 없음)
+uv run python tests/folders_test.py                        # 폴더 찾기(날짜 형식, 오타, 확인 질문), 두 사람 사진과 영상 촬영 시각 정렬, 사진 묶음과 모음집 힌트, 카메라 컷과 필름 번호순 35항목
+BROWSER_CHANNEL=chrome uv run python tests/place_blog_test.py    # 장소, 내 스타일, 같은 장소 리뷰(감상 줄 포함), 최신 경향, 사진 배치 분석, 다른 블로그 끄기 34항목
 uv run python tests/archive_test.py                        # 겹침 경고(정보 줄 제외 포함) 12항목
-uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 이모지, 내 글 링크, 개인 규칙 파일 점검 40항목
+uv run python tests/formatting_test.py                     # 줄 정리, 추천 문구, 말투와 제목 형식, 이모지, 내 글 링크, 개인 규칙 파일 점검, 사진 배치 미리보기와 가독성 경고, 촬영 시각 추정과 fill 없는 구역 경고, 사진만 모은 구역, 폴더 날짜 줄 48항목
 BROWSER_CHANNEL=chrome uv run python tests/draft_job_test.py     # stdio MCP 접수·조회·중복·재시작 (NBW_TEST_SAVE_DELAY_S=81로 장시간 재현)
 uv run python tests/gemini_writer_test.py                       # 가짜 agy로 문안 생성·회수·실패 및 dry_run, 외부 전송 없음
 uvx ruff check src tests
@@ -120,7 +126,7 @@ src/naver_blog_writer/
     ├── writing_packet.py   # Brief 검증, 묶음 고정(packet_id), 페이지 읽기
     ├── agy_acp.py        # agy acp stdio JSON-RPC 클라이언트(모델 확인, set_model, 도구 거부)
     ├── gemini_writer.py  # 생성 작업 1건 관리, 응답 JSON 검증과 블록 변환
-tests/mock_editor/         # 가짜 SmartEditor (빈 문단을 대체하는 블록 삽입, Enter 직후 버려지는 ArrowUp, 정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
+tests/mock_editor/         # 가짜 SmartEditor (빈 문단을 대체하는 블록 삽입, Enter 직후 버려지는 ArrowUp, 정렬, 굵게, 인용구 모양과 여러 줄, 구분선, 장소, 링크 카드, 동영상 업로더, 사진 여러 장 선택 시 '사진 첨부 방식' 창과 그룹사진(슬라이드, 콜라주, 10장 초과 disabled), '파일 전송 오류' 창, 캡션, 늦게 뜨는 '작성 중인 글' 창, 이모지 손실, 발행 버튼)
 ```
 
 ## 도구 작성 규칙
@@ -147,6 +153,9 @@ tests/mock_editor/         # 가짜 SmartEditor (빈 문단을 대체하는 블�
 - 사진은 블록이 먼저 생기고 업로드가 나중에 끝난다. `wait_upload_done()`이 이미지 주소가 http(s)로 바뀌고 로딩 표시가 사라질 때까지 기다린다.
 - 글쓰기 주소는 로그인이 만료되면 몇 초 뒤 자바스크립트로 nid.naver.com으로 넘어간다. 공개 블로그 주소는 만료돼도 열리므로 로그인 확인에 쓰지 않는다.
 - 사진은 사진 버튼과 `page.expect_file_chooser()`로 넣고, 대체 경로는 `input#hidden-file`.
+- 사진을 여러 장 고르면 '사진 첨부 방식' 창(`.se-popup-image-type`)이 뜬다: 개별사진(`#image-type-list`), 콜라주(`#image-type-collage`), 슬라이드(`#image-type-slide`). 콜라주와 슬라이드는 그룹사진 블록 하나(`se-imageGroup se-l-collage`/`se-l-slide`)가 되고 최대 10장이다(11장 이상이면 두 선택지가 disabled, 안내문 '그룹사진은 최대 10장'). `insert_gallery()`는 `label[for=image-type-…]`를 누르고, 사진 칸(`.se-module-image`) 수가 맞고 `se-is-progress`가 모두 빠지고 진행 창(`.se-popup-progress`)이 사라질 때까지 기다린다. 슬라이드는 화면에 보이는 사진만 실제 주소로 불러오고 나머지는 자리 이미지(`data:image/svg`)로 두므로, 모든 사진이 http 주소가 되기를 기다리면 끝나지 않는다(5장 슬라이드에서 240초 대기 후 실패, 2026-11-26).
+- 나란히(`se-imageStrip`)는 업로드 창의 선택지가 아니다. 개별 사진을 넣은 뒤 다음 사진을 줄의 마지막 사진 오른쪽으로 끌어다 놓으면 한 줄로 합쳐진다(`insert_strip()`). ① 방금 넣어 선택된 사진(초록 테두리)은 끌리지 않으므로 끌기 전마다 아래 문단을 눌러 선택을 푼다. ② 끄는 동안 대상 위에 `.se-drop-indicator-right`가 뜬 자리에서만 놓는다. ③ 오른쪽 표시는 가장자리 쪽 어디서나 뜨지만 2장 줄의 마지막 사진은 97%에서 놓으면 합쳐지지 않고 85%에서 합쳐졌다. 그래서 안쪽부터(`STRIP_DROP_SPOTS`) 놓고 결과(줄의 사진 수 증가, 그 id의 개별 사진 블록 사라짐)로 확인하며, 합쳐지지 않으면(사진은 제자리) 다음 자리로, 모두 안 되면 저장 전에 멈춘다. ④ 합쳐진 줄은 옮긴 블록의 id를 이어받기도 한다. ⑤ 사진이 화면 높이만큼 커서 두 장이 한 화면에 안 들어오면 끄는 동안만 창 높이를 늘렸다가 돌려놓는다(2026-11-26 실제 에디터, 3장 줄 약 18초).
+- 한 번에 고를 수 있는 파일은 50개이고 넘는 파일은 '첨부 개수 오류'로 지워진다. 글 전체로는 나눠 넣으면 93장이 들어갔다. 93장을 1분 안에 몰아 올리면 '일시적으로 파일전송을 사용할 수 없습니다'가 떴다. 이런 '파일 전송 오류' 창이 뜨면 `_upload_error()`로 잡아 저장 전에 멈춘다(2026-11-26 실제 에디터).
 - 블록(사진, 인용구, 구분선, 지도) 안에서 아래 문단으로 빠져나가는 키 조작은 없다. 인용구 안의 Enter는 같은 인용구 안에 새 줄을 만든다(소제목은 한 줄로만 넣고, 마무리 상자 `insert_quote()`는 이것으로 여러 줄을 넣는다). 실행 취소도 엉뚱한 글자를 지운다. 그래서 블록을 넣기 전에 `prepare_block_slot()`(마지막 문단 클릭 → Enter, 문단 수 증가 확인 → 윗 문단을 직접 클릭)으로 아래에 빈 문단을 남겨 두면 텍스트 블록이 나뉘어 블록 아래에 문단이 생긴다. 인용구와 사진은 커서가 있는 빈 문단을 대체해서 들어가므로, 커서가 맨 끝 문단에 있으면 블록이 글의 끝이 되어 빠져나올 수 없다. 윗 문단으로 ArrowUp을 쓰지 않는다: 46블록 글에서 Enter 직후의 ArrowUp이 버려져 포스트잇 마무리 상자가 맨 끝 빈 문단을 대체했고 해시태그 단계에서 저장 전에 멈췄다(2026-11-25 실제 에디터). 블록마다 `ensure_text_after()`로 아래 문단이 남았는지 확인하고, 없으면 그 블록에서 바로 멈춘다. `move_to_end()`는 그 문단을 클릭할 뿐 블록 안에서 Enter를 누르지 않는다.
 - 브라우저의 선택 영역(getSelection)은 에디터 내부 커서와 다르다. 글을 입력한 직후 키보드 위치를 믿지 말고 블록을 넣기 전에 마지막 문단을 직접 클릭한다. 위치 확인은 결과(블록 배치 순서, `verify_text`의 layout)로 한다.
 - 이모지(4바이트 문자)가 섞인 글자를 한 번에 넣으면 이모지만 남는다. `type_text()`가 이모지 앞뒤로 나눠 입력한다.

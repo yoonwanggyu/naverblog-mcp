@@ -140,12 +140,14 @@ def summarize(place_name: str, place_id: str, reviews: list[dict[str, Any]]) -> 
         "rules": [
             "이 리뷰들의 문장, 제목, 소제목, 도입과 마무리를 그대로 쓰거나 바꿔 쓰지 않는다. write_post가 겹침을 검사한다.",
             "형식(분량, 사진 수, 소제목 수, 지도 위치)은 참고만 하고, 말투와 구성은 스타일 가이드와 내 스타일을 따른다.",
+            "photo_layout(개별, 나란히, 콜라주, 슬라이드 배치 통계)은 사진 배치를 정할 때의 참고 자료다. 내 사진 이름 묶음과 함께 보고 가독성 있게 고른다.",
             "info_lines의 가격, 영업시간, 주차, 예약은 최근 6개월 안의 리뷰 2곳 이상이 같은 값일 때만 쓴다. 아니면 [[확인필요]].",
             "less_covered(다른 리뷰가 덜 다룬 내용)를 내 사진과 메모로 채울 수 있으면 그 부분을 더 자세히 써서 차별점을 만든다.",
             "impressions와 feeling_samples(다른 방문자의 감상)는 fill 추천 문구의 재료로 적극 쓴다. 여러 리뷰가 말한 장점, 아쉬움, 팁을 "
             "추천 문구 후보로 넣되 문장은 내 말로 바꾼다(3어절 이상 그대로 잇지 않음). 본문(text)에 다른 사람의 평가를 내 경험처럼 쓰지 않는다.",
         ],
         "format_summary": agg,
+        "photo_layout": post_analysis.layout_text(agg.get("photo_layout", {})),
         "most_covered": [t for t, c in topics.items() if c >= max(2, n // 2)],
         "less_covered": less,
         "price_agreed_recent": agreed,
@@ -156,6 +158,7 @@ def summarize(place_name: str, place_id: str, reviews: list[dict[str, Any]]) -> 
             "chars": r["analysis"]["chars"], "images": r["analysis"]["images"], "lines": r["analysis"]["lines"],
             "avg_line": r["analysis"]["avg_line"], "center_ratio": r["analysis"]["center_ratio"],
             "subtitles": r["analysis"]["subtitles"][:8], "place_position": r["analysis"]["place_position"],
+            "photo_layout": post_analysis.layout_text(post_analysis.layout_summary([r["analysis"]])),
             "tone": r["analysis"]["tone"], "info_lines": r["analysis"]["info_lines"],
         } for r in reviews],
     }

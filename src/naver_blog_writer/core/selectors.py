@@ -76,10 +76,26 @@ DIVIDER_BUTTON_NAMES = ["구분선"]
 PLACE_BUTTON = ["button.se-map-toolbar-button", "button[data-name='map']"]
 PLACE_BUTTON_NAMES = ["장소"]
 FILE_INPUT = ["input#hidden-file", "input[type='file'][accept*='image']", "input[type='file']"]
+# 사진 여러 장을 한 번에 고르면 '사진 첨부 방식' 창이 뜹니다: 개별사진(list), 콜라주(collage), 슬라이드(slide).
+# 콜라주와 슬라이드는 그룹사진 블록(se-imageGroup se-l-collage / se-l-slide) 하나가 되고 최대 10장입니다
+# (11장 이상이면 두 선택지가 disabled, 안내문 '그룹사진은 최대 10장의 사진으로 만들 수 있습니다'). 한 번에 고를 수 있는 파일은 50개이고
+# 넘는 파일은 '첨부 개수 오류'로 문서에서 지워집니다. 글 전체로는 나눠 넣으면 93장까지 들어갔습니다(2026-11-26 실제 에디터).
+IMAGE_GROUP_COMPONENT = ".se-component.se-imageGroup"
+IMAGE_TYPE_POPUP = [".se-popup-image-type"]
+IMAGE_TYPE_INPUT = "#image-type-{layout}"          # input type=button. disabled면 그 방식은 고를 수 없음
+IMAGE_TYPE_LABEL = "label[for='image-type-{layout}']"
+# 나란히: 개별 사진을 다른 사진의 오른쪽 가장자리로 끌어다 놓으면 한 줄(se-imageStrip, 2~3장)로 합쳐집니다. 업로드 창의
+# 선택지가 아닙니다. 끄는 동안 놓을 자리에 오른쪽 표시(se-drop-indicator-right, 화면의 초록 세로선)가 뜹니다(2026-11-26 실제 에디터).
+STRIP_COMPONENT = ".se-component.se-imageStrip"
+SINGLE_IMAGE_COMPONENT = ".se-component.se-image"
+DROP_RIGHT = ".se-drop-indicator-right"
+# 업로드가 거부되면 '파일 전송 오류' 창이 뜹니다(예: '첨부 개수 오류', '일시적으로 파일전송을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.').
+UPLOAD_ERROR_TEXT = "파일 전송 오류"
 
 # 사진 업로드 진행 표시. 이것이 보이는 동안은 업로드가 끝나지 않은 것으로 봅니다.
 IMAGE_UPLOADING = [".se-image-loading", "[class*='loading']", "[class*='progress']", "[class*='uploading']"]  # 사진 블록 안
-UPLOAD_PROGRESS = [".se-popup:has-text('올리는 중')", ".se-popup:has-text('업로드 중')", "[class*='upload'][class*='progress']"]
+UPLOAD_PROGRESS = [".se-popup-progress", ".se-popup:has-text('올리는 중')", ".se-popup:has-text('업로드 중')", "[class*='upload'][class*='progress']"]
+# '.se-popup-progress': '업로드 준비 중입니다. N개 파일 0/N', '파일이름 크기 2/N'을 보여 주는 진행 창(실제 에디터에서 확인)
 
 # 인용구 안 본문, 사진 설명
 QUOTE_TEXT = [".se-quote .se-text-paragraph", ".se-quotation-container .se-text-paragraph", ".se-text-paragraph"]

@@ -67,6 +67,9 @@ if DRAFT_WRITER not in {"claude", "gemini"}:
     raise ValueError("DRAFT_WRITER는 claude 또는 gemini입니다.")
 AGY_PATH = os.environ.get("AGY_PATH", "agy").strip() or "agy"
 AGY_MODEL = os.environ.get("AGY_MODEL", "gemini-3.8-flash-medium").strip()
+# Gemini 문안 생성 제한 시간(초). 접수·조회 구조라 Claude Desktop의 도구 대기(약 80초)와 무관합니다.
+# 250초였을 때 사진 93장·글 자리 138개 모음집이 시간 초과로 실패했습니다(2026-11-26).
+AGY_TIMEOUT_S: int = _int("AGY_TIMEOUT_S", 900)
 
 # 서버가 쓰는 모든 파일(브라우저 프로필, 캐시, 로그)의 기준 폴더. 절대경로라서 cwd 영향을 받지 않습니다.
 HOME: Path = Path(os.environ.get("NBW_HOME", str(Path.home() / ".naver-blog-writer"))).expanduser().resolve()
@@ -127,9 +130,6 @@ DAILY_DRAFT_LIMIT: int = _int("DAILY_DRAFT_LIMIT", 2)
 
 # 같은 글을 연속으로 저장하는 것을 막는 시간(분)
 DUPLICATE_WINDOW_MIN: int = _int("DUPLICATE_WINDOW_MIN", 60)
-
-# 한 글에 넣을 수 있는 최대 이미지 수 (안전장치)
-MAX_IMAGES_PER_POST: int = _int("MAX_IMAGES_PER_POST", 30)
 
 # 업로드 전에 사진의 GPS 위치 정보를 지웁니다(기본 true). 집 근처 사진 등의 위치 노출을 막습니다.
 STRIP_GPS: bool = _bool("STRIP_GPS", True)

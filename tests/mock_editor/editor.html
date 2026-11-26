@@ -41,7 +41,7 @@
   <button class="tb_map__x2" onclick="openPlace()">장소</button>
   <button class="se-video-toolbar-button" data-name="video" onclick="openVideo()">동영상</button>
   <input type="file" id="video-file" accept="video/*" style="display:none">
-  <input type="file" id="hidden-file" accept="image/*" style="display:none">
+  <input type="file" id="hidden-file" accept="image/*" multiple style="display:none">
 </div>
 <div class="se-components-wrap" id="wrap">
   <div class="se-component se-documentTitle"><p class="se-text-paragraph" contenteditable="true"></p></div>
@@ -78,6 +78,7 @@
 <script>
 let current = null;
 let images = 0;
+let compSeq = 0;
 let saveCount = 0;
 const wrap = document.getElementById('wrap');
 document.addEventListener('focusin', e => { const c = e.target.closest('#wrap .se-component'); if (c) current = c; });
@@ -125,7 +126,7 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('keydown', e => { if (e.key === 'Enter') window.__lastEnterAt = performance.now(); }, true);
 function block(cls, inner) {
-  const d = document.createElement('div'); d.className = 'se-component ' + cls; d.tabIndex = 0;
+  const d = document.createElement('div'); d.className = 'se-component ' + cls; d.tabIndex = 0; d.id = 'SE-' + (++compSeq);
   d.innerHTML = '<div class="se-section">' + (inner || '') + '</div>';
   const base = ref();
   const split = base.classList.contains('se-text') && lastP && base.contains(lastP);
@@ -221,13 +222,55 @@ function confirmPlace() {                       // '추가' 직후 너무 빨리
 }
 
 // 사진: 블록이 먼저 생기고(blob 주소, 로딩 표시, 진행 팝업) 잠시 뒤 실제 주소로 바뀌는 업로드를 재현
+// 여러 장을 고르면 '사진 첨부 방식' 창(개별사진/콜라주/슬라이드). 11장 이상이면 콜라주와 슬라이드는 disabled(실제 에디터에서 확인)
 document.getElementById('hidden-file').addEventListener('change', e => {
-  const f = e.target.files[0]; if (!f) return;
+  const files = [...e.target.files]; e.target.value = '';
+  if (!files.length) return;
+  if (files.length === 1) { addImage(files[0]); return; }
+  const pop = document.createElement('div'); pop.className = 'se-popup se-popup-image-type';
+  const dis = files.length > 10 ? ' disabled' : '';
+  pop.innerHTML = '<strong class="se-popup-title">사진 첨부 방식</strong><ul>'
+    + [['list', '개별사진'], ['collage', '콜라주'], ['slide', '슬라이드']].map(([k, t]) =>
+        '<li><input type="button" id="image-type-' + k + '"' + (k === 'list' ? '' : dis) + '><label for="image-type-' + k + '">' + t + '</label></li>').join('')
+    + '</ul>';
+  pop.querySelectorAll('label').forEach(l => l.addEventListener('click', ev => {
+    ev.preventDefault();
+    if (document.getElementById(l.htmlFor).disabled) return;
+    const k = l.htmlFor.replace('image-type-', ''); pop.remove();
+    if (k === 'list') files.forEach(addImage); else addGroup(files, k);
+  }));
+  document.body.appendChild(pop);
+});
+// 그룹사진: 블록 하나에 사진 여러 장. 잠시 뒤 모두 실제 주소로 바뀜. __uploadError면 '파일 전송 오류' 창이 뜨고 끝나지 않음
+function addGroup(files, kind) {
   setTimeout(() => {
-    const img = block('se-image', '<img src="' + URL.createObjectURL(f) + '"><span class="se-image-loading">업로드 중</span>'
+    // 사진 칸은 올리는 동안 se-is-progress. 끝나면 슬라이드는 앞 2장만 실제 주소, 나머지는 자리 이미지로 남음(실제 에디터에서 확인)
+    const g = block('se-imageGroup se-l-' + kind, files.map(f => '<div class="se-module se-module-image se-is-progress"><img src="'
+                    + URL.createObjectURL(f) + '"></div>').join(''));
+    const prog = document.createElement('div'); prog.className = 'se-popup se-popup-progress';
+    prog.textContent = '업로드 준비 중입니다. ' + files.length + '개 파일 0/' + files.length; document.body.appendChild(prog);
+    imageArrow(g); g.dataset.files = files.map(f => f.name).join('|');
+    if (window.__uploadError) {
+      const p = document.createElement('div'); p.className = 'se-popup se-popup-alert';
+      p.innerHTML = '파일 전송 오류 일시적으로 파일전송을 사용할 수 없습니다. 잠시 후 다시 시도해주세요. <button>확인</button>';
+      document.body.appendChild(p); return;
+    }
+    setTimeout(() => {
+      prog.remove();
+      if (!g.isConnected) return;
+      g.querySelectorAll('.se-module-image').forEach((m, i) => {
+        m.classList.remove('se-is-progress');
+        m.querySelector('img').src = (kind === 'slide' && i >= 2) ? 'data:image/svg+xml;base64,PHN2Zy8+' : 'uploaded.svg?g' + i;
+      });
+    }, 900);
+  }, 300);
+}
+function addImage(f) {
+  setTimeout(() => {
+    const img = block('se-image', '<img class="se-image-resource" src="' + URL.createObjectURL(f) + '"><span class="se-image-loading">업로드 중</span>'
                       + '<div class="se-caption"><p class="se-text-paragraph" contenteditable="true"></p></div>');
-    imageArrow(img);
-    img.dataset.file = f.name; e.target.value = ''; images++;
+    imageArrow(img); selected = img;                   // 방금 넣은 사진은 선택된 상태(실제 에디터)
+    img.dataset.file = f.name; images++;
     const prog = document.createElement('div'); prog.className = 'se-popup se-popup-upload';
     prog.innerHTML = '사진을 올리는 중입니다 <button class="se-popup-button se-popup-button-cancel">취소</button>';
     prog.querySelector('button').onclick = () => { window.__uploadCanceled = true; prog.remove(); img.remove(); };
@@ -244,7 +287,58 @@ document.getElementById('hidden-file').addEventListener('change', e => {
       document.body.prepend(p);
     }
   }, 300);
-});
+}
+
+// 나란히: 개별 사진을 다른 사진의 오른쪽(사진 폭 60~95%)으로 끌면 오른쪽 놓기 표시가 뜨고, 놓으면 한 줄(se-imageStrip)로 합쳐짐.
+// 선택된 사진은 끌리지 않음. 줄의 마지막 사진 맨 끝(95% 이상)에서는 표시는 뜨지만 놓아도 합쳐지지 않음.
+// 합쳐진 줄은 옮긴 사진 블록의 id를 이어받음. 모두 실제 에디터에서 확인한 동작(2026-11-26)
+let selected = null, drag = null;
+document.addEventListener('mousedown', e => {
+  const comp = e.target.closest && e.target.closest('.se-component');
+  if (!comp || !comp.classList.contains('se-image')) { selected = null; return; }
+  if (e.target.tagName !== 'IMG') return;            // 설명칸 등 사진 밖을 누르면 끌기 아님
+  if (comp === selected) return;                      // 선택된 사진은 끌기가 시작되지 않음
+  drag = {src: comp, x: e.clientX, y: e.clientY, moved: false, target: null, ok: false};
+  e.preventDefault();
+}, true);
+document.addEventListener('mousemove', e => {
+  if (!drag) return;
+  if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 5) { drag.moved = true; drag.src.classList.add('se-component-drag-source'); }
+  document.querySelectorAll('.se-drop-indicator-right').forEach(m => m.remove());
+  drag.target = null;
+  const under = document.elementsFromPoint(e.clientX, e.clientY).find(el => el.tagName === 'IMG' && !drag.src.contains(el));
+  if (!under) return;
+  const comp = under.closest('.se-component');
+  if (!comp || !(comp.classList.contains('se-image') || comp.classList.contains('se-imageStrip'))) return;
+  const r = under.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width;
+  if (fx < 0.6) return;
+  const m = document.createElement('div'); m.className = 'se-drop-indicator se-drop-indicator-right';
+  m.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;pointer-events:none';
+  document.body.appendChild(m);
+  const last = comp.classList.contains('se-imageStrip') ? [...comp.querySelectorAll('img')].pop() === under : true;
+  drag.target = comp; drag.ok = !(comp.classList.contains('se-imageStrip') && last && fx >= 0.95);
+}, true);
+document.addEventListener('mouseup', () => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  document.querySelectorAll('.se-drop-indicator-right').forEach(m => m.remove());
+  d.src.classList.remove('se-component-drag-source');
+  if (!d.moved) { selected = d.src; return; }
+  if (!d.target || !d.ok) return;
+  const moving = d.src.querySelector('img');
+  if (d.target.classList.contains('se-image')) {
+    const strip = document.createElement('div'); strip.className = 'se-component se-imageStrip se-imageStrip2'; strip.id = d.src.id;
+    strip.innerHTML = '<div class="se-section"></div>';
+    strip.firstChild.append(d.target.querySelector('img'), moving);
+    strip.dataset.files = [d.target.dataset.file, d.src.dataset.file].join('|');
+    d.target.replaceWith(strip);
+  } else {
+    d.target.firstChild.append(moving);
+    d.target.classList.replace('se-imageStrip2', 'se-imageStrip3');
+    d.target.dataset.files += '|' + d.src.dataset.file;
+  }
+  d.src.remove();
+}, true);
 
 // '작성 중인 글이 있습니다' 창은 에디터가 보이고 잠시 뒤에 늦게 뜨며 화면 전체를 덮어 제목 칸 클릭을 막음(실제 에디터에서 확인)
 setTimeout(() => {
@@ -286,6 +380,7 @@ function snapshot() {
   return [...wrap.querySelectorAll(':scope > .se-component')].map(c =>
     c.classList.contains('se-oglink') ? {cls: 'se-oglink', text: c.innerText.trim()}
     : c.classList.contains('se-video') ? {cls: 'se-video', video: c.dataset.file, text: c.innerText.trim()}
+    : (c.classList.contains('se-imageGroup') || c.classList.contains('se-imageStrip')) ? {cls: c.className.replace('se-component ', ''), imgs: c.dataset.files.split('|')}
     : c.classList.contains('se-image') ? {img: c.dataset.file, src: c.querySelector('img').getAttribute('src'), caption: c.querySelector('.se-caption').innerText.trim()}
     : c.classList.contains('se-quotation') ? {cls: c.className.replace('se-component ', ''), text: [...c.querySelectorAll('.se-quote p')].map(p => p.innerText).join('\n')}
     : {cls: c.className.replace('se-component ', ''), text: c.innerText.trim(),

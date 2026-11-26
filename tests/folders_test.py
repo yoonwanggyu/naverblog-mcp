@@ -158,7 +158,64 @@ async def order():
     check("촬영 순서대로면 경고 없음", _photo_order_warnings(paths) == [])
     check("순서가 바뀌면 경고(첫 사진은 대표 사진이라 제외)",
           len(_photo_order_warnings([paths[0], paths[3], paths[1]])) == 1 and _photo_order_warnings([paths[3], paths[0], paths[1]]) == [])
+    check("카메라 이름 사진은 묶지 않고 단일 글로 봄", res["photo_groups"] == [] and res["post_kind"]["post_kind_hint"] == "single",
+          str(res["photo_groups"]) + str(res["post_kind"]))
+
+
+async def groups():
+    """이름이 같고 끝 번호만 다른 사진은 묶음(gallery 재료), 여러 장소 이름이 붙은 폴더는 모음집 힌트."""
+    mix = root / "상암_맛집모음(26.01~26.06)"
+    names = ["만복국수집1.jpeg", "만복국수집3.jpeg", "만복국수집2.jpeg", "뽀끼당.jpeg", "뽀끼당2.jpeg", "JTBC구내식당 (2).jpg",
+             "JTBC구내식당-1.jpg", "BHC.jpeg", "멘지.jpeg", "식락1.jpeg", "IMG_1234.JPG", "스크린샷 2026-01-02 1.png"]
+    for n in names:
+        photo(mix, n)
+    res = await scan_media(str(mix), user_confirmed=True)
+    got = {g["name"]: [p.rsplit("/", 1)[-1] for p in g["paths"]] for g in res["photo_groups"]}
+    check("이름이 같고 번호만 다른 사진 묶음(번호순, 번호 없는 사진은 1번)", got == {
+        "만복국수집": ["만복국수집1.jpeg", "만복국수집2.jpeg", "만복국수집3.jpeg"], "뽀끼당": ["뽀끼당.jpeg", "뽀끼당2.jpeg"],
+        "JTBC구내식당": ["JTBC구내식당-1.jpg", "JTBC구내식당 (2).jpg"]}, str(got))
+    check("여러 장소 이름이 붙은 폴더는 모음집 힌트", res["post_kind"]["post_kind_hint"] == "collection", str(res["post_kind"]))
+    from naver_blog_writer.core import media
+    many = [{"path": f"/x/한동이{n}.jpeg", "kind": "image", "order": n} for n in range(1, 13)]
+    split, _ = media.photo_groups(many)
+    check("10장 넘는 묶음은 그룹사진 한도(10장)로 나눔", [len(g["paths"]) for g in split] == [10, 2], str([len(g["paths"]) for g in split]))
+
+
+async def cameras():
+    """핸드폰이 아닌 카메라 사진(파일 이름 '필름', 'DSLR' 또는 EXIF 기기)은 종류별로 따로 묶고, 시간 순서 검사에서 뺍니다."""
+    trip = root / "춘천여행(26.10.03)"
+    photo(trip, "IMG_0001.JPG", original="2026:10:03 11:00:00", model="iPhone 16")
+    photo(trip, "필름_01.jpg", original="2026:10:03 11:30:00")
+    photo(trip, "IMG_0002.JPG", original="2026:10:03 12:00:00", model="iPhone 16")
+    photo(trip, "필름_02.jpg", original="2026:10:03 10:00:00")
+    photo(trip, "DSC_0101.JPG", original="2026:10:03 12:30:00", model="Canon EOS R6")
+    photo(trip, "춘천 DSLR 컷.jpg", original="2026:10:03 13:00:00")
+    photo(trip, "scan_0007.jpg", model="Noritsu Koki SP-3000")
+    res = await scan_media(str(trip), user_confirmed=True)
+    got = {g["label"]: [p.rsplit("/", 1)[-1] for p in g["paths"]] for g in res["camera_groups"]}
+    check("카메라 사진을 종류별로 묶음(파일 이름 → EXIF 기기 순)", got == {
+        "필름카메라": ["scan_0007.jpg", "필름_01.jpg", "필름_02.jpg"], "미러리스": ["DSC_0101.JPG"], "DSLR": ["춘천 DSLR 컷.jpg"]}, str(got))
+    from naver_blog_writer.core.media import camera_groups, camera_kind
+    film = [{"kind": "image", "path": f"/x/2026-11-26 오후 9.06.23필름카메라 {n}.JPG", "order": o, "camera_kind": {"label": "필름카메라", "device": ""}}
+            for o, n in enumerate([22, 26, 11, 2, 10, 3], 1)]
+    check("필름 스캔은 스캔 시각이 아니라 파일 번호순(2 → 3 → 10, 글자순 아님)",
+          [p.rsplit(" ", 1)[-1] for p in camera_groups(film)[0]["paths"]] == ["2.JPG", "3.JPG", "10.JPG", "11.JPG", "22.JPG", "26.JPG"])
+    check("기종으로 DSLR·미러리스 구분(실제 춘천 폴더의 Canon EOS 5D Mark II → DSLR)",
+          camera_kind("x.jpg", {"camera": "Canon EOS 5D Mark II", "camera_make": "Canon"})["label"] == "DSLR"
+          and camera_kind("x.jpg", {"camera": "EZ Controller", "camera_make": "NORITSU KOKI"})["label"] == "필름카메라"
+          and camera_kind("x.jpg", {"camera": "iPhone 16", "camera_make": "Apple"}) is None)
+    check("카메라 사진은 이름 묶음에서 빠지고 마무리 상자 위 구역 안내", res["photo_groups"] == [] and "마무리 상자 바로 위" in (res["camera_note"] or ""),
+          str(res["photo_groups"]))
+    from naver_blog_writer.tools.write_post import _group_order_warnings, _photo_order_warnings
+    phone = [trip / "IMG_0001.JPG", trip / "IMG_0002.JPG"]
+    check("카메라 사진은 시간 순서 검사에서 뺌(본문 뒤 구역에 놓아도 경고 없음)",
+          _photo_order_warnings([phone[0], phone[1], trip / "필름_02.jpg", trip / "필름_01.jpg"]) == [])
+    mixed = {0: [root / "a" / "오한수우육면관2.jpeg", root / "a" / "오한수우육면관1.jpeg"]}
+    check("이름 묶음 안이 파일 번호순이 아니면 경고", len(_group_order_warnings(mixed)) == 1
+          and _group_order_warnings({0: list(reversed(mixed[0]))}) == [], str(_group_order_warnings(mixed)))
 
 
 asyncio.run(order())
+asyncio.run(groups())
+asyncio.run(cameras())
 sys.exit(0 if all(results) else 1)

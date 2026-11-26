@@ -69,7 +69,8 @@ def other_post(title, lines, price):
  <div class="se-component se-text"><p class="se-text-paragraph se-text-paragraph-align-center">{price}</p>
   <p class="se-text-paragraph se-text-paragraph-align-center">주차 : 건물 지하 2시간 무료</p>
   <p class="se-text-paragraph se-text-paragraph-align-center">저의 단골 가게 오늘 소개해 드릴게요!</p></div>
- <div class="se-component se-image"><img class="se-image-resource" src="b.png"></div>
+ <div class="se-component se-imageStrip se-imageStrip2 se-l-default"><img class="se-image-resource" src="b.png"><img class="se-image-resource" src="c.png"></div>
+ <div class="se-component se-imageGroup se-l-slide"><img class="se-image-resource" src="d.png"><img class="se-image-resource" src="e.png"><img class="se-image-resource" src="f.png"></div>
 </div></body></html>"""
 
 
@@ -133,6 +134,7 @@ async def main():
     tr = res["trend_sync"]
     check("최신 경향 첫 분석(블로그당 1편, 쇼핑 글 제외)", tr.get("refreshed") is True and tr.get("posts") == 2, str(tr))
     check("가이드에 부록 B 최신 경향이 붙음", "# 부록 B. 최신 경향 (자동 갱신" in res["guide"] and "가운데 정렬 2/2" in res["guide"])
+    check("부록 B에 사진 배치 경향", "| 사진 배치 | 개별 2/2" in res["guide"], [ln for ln in res["guide"].splitlines() if "사진 배치" in ln][:1])
     tdata = trends.load("맛집")
     check("최신 경향에는 본문과 글 주소를 저장하지 않음", "카운터 자리에서" not in _json.dumps(tdata, ensure_ascii=False)
           and "rv_new" not in _json.dumps(tdata, ensure_ascii=False) and tdata.get("source_kinds") == {"인기": 1, "최신": 1},
@@ -147,6 +149,8 @@ async def main():
     guide = res["guide"]
     check("가이드에 10절 내 스타일이 붙음", "10절. 내 스타일" in guide and "테스트 글 7" in guide and "주말에 일산으로" in guide)
     check("my_style.md 파일 갱신", config.MY_STYLE_PATH.is_file() and "자주 쓰는 문장 끝" in config.MY_STYLE_PATH.read_text(encoding="utf-8"))
+    check("내 글 사진 배치 분석(10절)", "- 사진 배치: 개별 5/5(100%)" in config.MY_STYLE_PATH.read_text(encoding="utf-8"),
+          [ln for ln in config.MY_STYLE_PATH.read_text(encoding="utf-8").splitlines() if "배치" in ln][:1])
     check("겹침 비교 대상 = 블로그 최근 글", sum(1 for p in archive.comparison_posts() if p["source"] == "블로그") == 5)
     w = archive.overlap_warnings("새 글 제목입니다", None, None, ["7번 글 주차는 어떻게 하나요?"], "완전히 새로운 문장입니다.")
     check("블로그 글과 같은 소제목 경고", any("소제목" in x for x in w), str(w)[:80])
@@ -172,7 +176,10 @@ async def main():
     r = await place_reviews_tool("1699893670", "젠스시")
     order = [x["url"].split("/")[-2] for x in r["reviews"]]
     check("블로그 리뷰만 최신순(카페 글, 중복 제외)", order == ["rv_new", "rv_mid", "rv_old"], str(order))
-    check("형식 요약(사진, 정렬, 지도 위치, 소제목)", r["format_summary"]["images"] == 2 and r["format_summary"]["center_posts"] == "3/3"
+    check("사진 배치 분석(개별, 나란히, 슬라이드)", r["photo_layout"].startswith("개별 3/3(17%)") and "나란히 3/3(33%, 블록당 2.0장)" in r["photo_layout"]
+          and "슬라이드 3/3(50%, 블록당 3.0장)" in r["photo_layout"] and "콜라주" not in r["photo_layout"]
+          and r["reviews"][0]["photo_layout"].startswith("개별 1/1"), r["photo_layout"])
+    check("형식 요약(사진, 정렬, 지도 위치, 소제목)", r["format_summary"]["images"] == 6 and r["format_summary"]["center_posts"] == "3/3"
           and r["format_summary"]["place"]["middle"] == 3 and r["format_summary"]["common_subtitles"] == ["메뉴"], str({k: r["format_summary"].get(k) for k in ("images", "center_posts", "place", "common_subtitles")}))
     check("최근 6개월 2곳 이상 같은 가격만 사실 후보", list(r["price_agreed_recent"]) == ["45,000원"], str(r["price_agreed_recent"]))
     info = r["reviews"][0]["info_lines"]

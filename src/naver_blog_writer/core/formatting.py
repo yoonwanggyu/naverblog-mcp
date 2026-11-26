@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from pathlib import Path
 
 _ZERO_WIDTH = re.compile(r"[​‌‍﻿]")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u231A-\u23FF☀-➿⭐❤✅✔][️‍]*")
@@ -45,6 +46,8 @@ SUBJECTIVE = re.compile(
 )
 # 사진 촬영 시각을 그대로 옮긴 표현(예: 오후 2시 17분). 사람이 쓴 후기에는 거의 없습니다.
 EXIF_TIME = re.compile(r"(오전|오후)?\s?\d{1,2}시\s?\d{1,2}분")
+# 사진 촬영 시각·날짜로 방문 시기와 끼니를 추정한 줄(예: '도락은 1월 첫 평일 점심에 찾았어요'). Gemini 시험 글에서 180줄 중 74줄(2026-11-26)
+CAPTURE_GUESS = re.compile(r"(\d{1,2}\s?월|평일|주말|주중)[^.\n]{0,20}?(다녀왔|다녀온|방문|찾았|찾은|들렀|들른|먹었|챙겼|기록했|갔어|갔던|갔습)")
 # 소제목으로 쓰면 정보 문서처럼 보이는 표현
 FAQ_SUBTITLE = re.compile(r"자주\s?묻는\s?질문|FAQ|Q\s?&\s?A", re.I)
 # 사람이 쓰지 않는 억지 장치: 퀴즈, 비유 소제목
@@ -81,6 +84,39 @@ def fact_line(line: str) -> bool:
     """이모지 머리표로 시작하는 가게 정보 줄(📍 주소, 📞 전화, ⏰ 영업시간 등). 같은 가게면 누구 글이든 값이 같으므로
     겹침 검사에서 뺍니다. 추천 문구, 체크리스트, 목록 줄은 여기에 들지 않아 계속 검사합니다."""
     return bool(_FACT_LINE.match(line.strip()))
+
+
+LAYOUT_NAMES = {"single": "개별", "strip": "나란히", "collage": "콜라주", "slide": "슬라이드"}
+
+
+def layout_preview(blocks: list[dict]) -> dict:
+    """모바일 화면에서 위에서 아래로 보이는 순서를 글로 그린 미리보기와 사진 배치 요약. 가독성 판단용(dry_run)."""
+    out: list[str] = []
+    counts: dict[str, dict[str, int]] = {}
+    for b in blocks:
+        typ = b.get("type")
+        if typ in ("text", "fill"):
+            n = sum(len(p) for p in to_paragraphs(b.get("text") or "" if typ == "text" else render_fill(b.get("suggestions"))))
+            label = f"글 {n}줄" if typ == "text" else f"직접 입력({b.get('topic') or '-'})"
+            if out and out[-1].startswith("글 ") and typ == "text":
+                out[-1] = f"글 {int(out[-1].split()[1][:-1]) + n}줄"
+            else:
+                out.append(label)
+            continue
+        if typ == "image":
+            key, names = "single", [Path(b.get("path") or "").stem]
+        elif typ == "gallery":
+            key, names = b.get("layout") or "?", [Path(x).stem for x in b.get("paths") or []]
+        else:
+            out.append({"subtitle": f"소제목: {clean_line(b.get('text') or '')[:20]}", "quote": "마무리 상자", "divider": "구분선",
+                        "place": f"지도: {b.get('query') or ''}", "video": "영상", "link": "내 글 링크"}.get(typ, typ or "?"))
+            continue
+        c = counts.setdefault(key, {"blocks": 0, "photos": 0})
+        c["blocks"] += 1
+        c["photos"] += len(names)
+        out.append(f"[{LAYOUT_NAMES.get(key, key)} {len(names)}장: {' | '.join(names)}]" if key != "single" else f"[사진: {names[0]}]")
+    summary = " · ".join(f"{LAYOUT_NAMES.get(k, k)} {v['blocks']}블록 {v['photos']}장" for k, v in counts.items()) or "사진 없음"
+    return {"photo_layout": summary, "layout_preview": out}
 
 
 def _protected(line: str) -> bool:
@@ -187,9 +223,20 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
                 lines += [ln for g in to_paragraphs(txt) for ln in g]
         else:
             run = 0
-            n_img += typ == "image"
+            n_img += 1 if typ == "image" else len(b.get("paths") or []) if typ == "gallery" else 0
             if typ == "subtitle":
                 subtitles.append(b.get("text") or "")
+    photo_run = worst_run = 0
+    for b in blocks:
+        typ = b.get("type")
+        if typ in ("image", "gallery"):
+            photo_run += 1
+            worst_run = max(worst_run, photo_run)
+        elif typ not in ("place", "divider"):
+            photo_run = 0
+    if worst_run >= 4:
+        w.append(f"사진 블록 {worst_run}개가 글 없이 이어집니다. 모바일에서 사진만 길게 내려갑니다. 같은 장면이나 같은 곳 사진이면 "
+                 "나란히(strip)·콜라주·슬라이드로 묶거나, 사이에 1~2줄을 넣으세요(스타일 가이드 4-6절).")
     if max_run > 450:
         w.append(f"사진이나 소제목 없이 글이 {max_run}자 이어집니다. 사진 사이 글은 1~5줄(묶음 1~2개)이 보통입니다.")
     if total < 600:
@@ -233,7 +280,30 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
         w.append("❤️ ☀️ ✔️ ⭐️처럼 변형 선택자가 붙는 기호는 흑백 글자로 들어갑니다. 🤍 💕 🔆 ✅ 🌟를 쓰세요.")
     exif = [ln for ln in body if EXIF_TIME.search(ln)]
     if exif:
-        w.append(f"촬영 시각을 분 단위로 쓴 줄 {len(exif)}개: {[x[:20] for x in exif[:2]]}. '점심쯤', '오픈 직후'처럼 쓰거나 빼세요.")
+        w.append(f"촬영 시각을 분 단위로 쓴 줄 {len(exif)}개: {[x[:20] for x in exif[:2]]}. 사진 시각은 본문에 쓰지 않습니다. 빼세요.")
+    # 연도까지 쓴 날짜('2025년 3월 6일')는 폴더 이름의 날짜를 옮긴 것으로 봅니다(후쿠오카 시험 글의 잘못된 경고).
+    guessed = [ln for ln in body if CAPTURE_GUESS.search(visible(ln)) and not re.search(r"\d{4}\s?년|\d{2,4}[./-]\d{1,2}[./-]\d{1,2}", ln)]
+    if guessed:
+        w.append(f"사진 촬영 날짜·시각으로 방문 시기를 추정한 줄 {len(guessed)}개: {[x[:22] for x in guessed[:3]]}. 방문 날짜·끼니·횟수는 "
+                 "폴더 이름, 사용자 메모, 대화에 있을 때만 씁니다. 그 밖의 경험은 fill(직접 입력 자리 + 추천 문구)로 남기세요.")
+    section, sections_wo_fill, has_photo, has_fill, has_text = None, [], False, False, False
+    for b in blocks + [{"type": "subtitle", "text": ""}]:
+        typ = b.get("type")
+        if typ in ("subtitle", "quote"):
+            # 글 없이 사진만 모은 구역('필름카메라 컷' 같은 사진 구역)은 fill을 요구하지 않습니다.
+            if section is not None and has_photo and has_text and not has_fill:
+                sections_wo_fill.append(section)
+            section = clean_line(b.get("text") or "")[:15] if typ == "subtitle" else None   # 마무리 상자는 구역을 닫기만 함
+            has_photo, has_fill, has_text = False, False, False
+        elif typ in ("image", "gallery"):
+            has_photo = True
+        elif typ == "fill":
+            has_fill = True
+        elif typ == "text":
+            has_text = True
+    if sections_wo_fill:
+        w.append(f"사진은 있는데 직접 입력 자리(fill)가 없는 소제목 구역 {len(sections_wo_fill)}곳: {sections_wo_fill[:5]}. "
+                 "구역마다 맛·분위기·느낀 점을 채울 fill(추천 문구 2~3개)을 하나 이상 넣으세요.")
     gimmicks = [x for x in [t] + subtitles + body if GIMMICK.search(x)]
     if gimmicks:
         w.append(f"사람이 쓰지 않는 장치(퀴즈, 비유 소제목) {len(gimmicks)}곳: {[x[:20] for x in gimmicks[:3]]}. 빼거나 평범한 말로 바꾸세요.")

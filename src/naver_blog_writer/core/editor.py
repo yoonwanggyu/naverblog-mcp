@@ -600,7 +600,7 @@ async def insert_divider(frame: Frame) -> None:
     await _wait_count_increase(frame, S.DIVIDER_COMPONENT, before, 8, "구분선")
 
 
-async def insert_image(frame: Frame, path: Path, caption: str | None = None, timeout_s: float = 90) -> None:
+async def insert_image(frame: Frame, path: Path, caption: str | None = None, timeout_s: float = 90) -> Locator:
     page = frame.page
     before = await frame.locator(S.IMAGE_COMPONENT).count()
     btn = await first_visible(frame, S.IMAGE_BUTTON, timeout_ms=5000, names=S.IMAGE_BUTTON_NAMES)
@@ -635,6 +635,192 @@ async def insert_image(frame: Frame, path: Path, caption: str | None = None, tim
             raise EditorError("사진 설명 입력란을 찾지 못했습니다.")
         await safe_click(cap)
         await type_text(page, caption)
+    return image
+
+
+# 대상 사진 폭에서 놓아 볼 자리. 오른쪽 표시(se-drop-indicator-right)는 가장자리 쪽 어디서나 뜨지만, 2장 줄의 마지막 사진은
+# 97%에서 놓으면 합쳐지지 않고 85%에서 합쳐졌습니다(2026-11-26 실제 에디터). 그래서 안쪽부터 놓아 보고 결과로 확인합니다.
+STRIP_DROP_SPOTS = (0.85, 0.78, 0.7, 0.92)
+
+
+async def _visible_right_marker(frame: Frame, target: dict) -> bool:
+    """대상 사진 위에 오른쪽 놓기 표시가 보이는지."""
+    marks = frame.locator(S.DROP_RIGHT)
+    for i in range(await marks.count()):
+        box = await marks.nth(i).bounding_box()
+        if box and box["width"] > 0 and box["height"] > 0 and box["x"] < target["x"] + target["width"] \
+                and target["x"] < box["x"] + box["width"] and box["y"] < target["y"] + target["height"] and target["y"] < box["y"] + box["height"]:
+            return True
+    return False
+
+
+async def _drag_beside(frame: Frame, src: Locator, dst: Locator, fx: float) -> bool:
+    """src 사진을 dst 사진 폭의 fx 지점으로 끌어 오른쪽 표시가 뜨면 놓습니다. 표시가 안 뜨면 제자리로 돌아와 놓고 False."""
+    page = frame.page
+    await dst.scroll_into_view_if_needed()
+    sb, db = await src.bounding_box(), await dst.bounding_box()
+    if not sb or not db:
+        raise EditorError("나란히로 옮길 사진의 위치를 찾지 못했습니다.")
+    sx, sy = sb["x"] + sb["width"] / 2, sb["y"] + sb["height"] / 2
+    tx, ty = db["x"] + db["width"] * fx, db["y"] + db["height"] * 0.5
+    await page.mouse.move(sx, sy)
+    await page.mouse.down()
+    await asyncio.sleep(0.3)
+    for i in range(1, 21):
+        await page.mouse.move(sx + (tx - sx) * i / 20, sy + (ty - sy) * i / 20)
+        await asyncio.sleep(0.04)
+    await asyncio.sleep(0.4)
+    if await _visible_right_marker(frame, db):
+        await page.mouse.up()
+        await asyncio.sleep(1.2)
+        return True
+    for i in range(1, 11):
+        await page.mouse.move(tx + (sx - tx) * i / 10, ty + (sy - ty) * i / 10)
+        await asyncio.sleep(0.04)
+    await page.mouse.up()
+    await asyncio.sleep(0.5)
+    return False
+
+
+async def _new_strips(frame: Frame, before: set[str]) -> list[str]:
+    return [x for x in await frame.locator(S.STRIP_COMPONENT).evaluate_all("els => els.map(e => e.id)") if x not in before]
+
+
+async def insert_strip(frame: Frame, paths: list[Path], timeout_s: float = 90) -> None:
+    """사진 2~3장을 한 줄에 나란히(se-imageStrip) 넣습니다.
+
+    사진을 한 장씩 개별로 넣은 뒤, 다음 사진을 줄의 마지막 사진 오른쪽으로 끌어다 놓습니다(실제 에디터에서 확인한 방법).
+    - 선택된 사진(방금 넣은 사진)은 끌리지 않으므로 끌기 전마다 아래 문단을 눌러 선택을 풉니다.
+    - 오른쪽 놓기 표시가 뜬 자리에서만 놓고, 놓을 때마다 줄의 사진 수가 늘고 그 개별 사진 블록이 사라졌는지 확인합니다.
+      합쳐지지 않았으면(사진은 제자리) 다음 자리(STRIP_DROP_SPOTS)로 다시 놓아 보고, 모두 안 되면 저장하지 않고 멈춥니다.
+    - 사진이 커서 두 장이 한 화면에 들어오지 않으면 끄는 동안만 창 높이를 늘렸다가 돌려놓습니다.
+    """
+    if not 2 <= len(paths) <= 3:
+        raise EditorError(f"나란히는 2~3장입니다({len(paths)}장).")
+    page = frame.page
+    ids: list[str] = []
+    for i, path in enumerate(paths):
+        if i:
+            await move_to_end(frame)
+            await prepare_block_slot(frame)
+        image = await insert_image(frame, path, timeout_s=timeout_s)
+        ids.append(await image.get_attribute("id") or "")
+    if not all(ids):
+        raise EditorError("나란히로 묶을 사진 블록을 구분하지 못했습니다.")
+    before = set(await frame.locator(S.STRIP_COMPONENT).evaluate_all("els => els.map(e => e.id)"))
+    original = page.viewport_size
+    try:
+        boxes = [b for b in [await frame.locator(f"[id='{x}'] img").first.bounding_box() for x in ids] if b]
+        need = max(b["y"] + b["height"] for b in boxes) - min(b["y"] for b in boxes) + 400 if boxes else 0
+        if original and need > original["height"]:
+            await page.set_viewport_size({"width": original["width"], "height": int(min(need, 4000))})
+            await asyncio.sleep(0.6)
+        for k in range(1, len(ids)):
+            merged = False
+            for fx in STRIP_DROP_SPOTS:
+                strips = await _new_strips(frame, before)
+                dst = (frame.locator(f"[id='{strips[0]}'] img.se-image-resource").last if strips
+                       else frame.locator(f"[id='{ids[0]}'] img.se-image-resource").first)
+                src = frame.locator(f"{S.SINGLE_IMAGE_COMPONENT}[id='{ids[k]}'] img.se-image-resource").first
+                await move_to_end(frame)   # 선택 풀기
+                await _drag_beside(frame, src, dst, fx)
+                strips = await _new_strips(frame, before)
+                got = await frame.locator(f"[id='{strips[0]}'] img.se-image-resource").count() if strips else 0
+                # 합쳐진 줄은 옮긴 블록의 id를 이어받기도 하므로 '그 id의 개별 사진 블록'이 남았는지로 봅니다.
+                single_left = await frame.locator(f"{S.SINGLE_IMAGE_COMPONENT}[id='{ids[k]}']").count()
+                if got == k + 1 and not single_left:
+                    merged = True
+                    break
+                if got > k + 1 or (got and got != k and not single_left):
+                    raise EditorError(f"나란히 만들기 결과가 다릅니다(줄의 사진 {got}장, 기대 {k + 1}장). 저장하지 않고 멈춥니다.")
+                log.info("나란히 놓기가 반영되지 않아 다른 자리로 다시 놓습니다: %s번째 사진, 위치 %.2f", k + 1, fx)
+            if not merged:
+                raise EditorError(f"{k + 1}번째 사진을 나란히 놓지 못했습니다. 저장하지 않고 멈춥니다.")
+    finally:
+        if original and page.viewport_size != original:
+            await page.set_viewport_size(original)
+            await asyncio.sleep(0.4)
+
+
+async def _upload_error(frame: Frame) -> str | None:
+    """네이버가 보여 주는 '파일 전송 오류' 창의 내용. 없으면 None."""
+    pop = frame.locator(".se-popup").filter(has_text=S.UPLOAD_ERROR_TEXT)
+    for i in range(await pop.count()):
+        el = pop.nth(i)
+        if await el.is_visible():
+            return re.sub(r"\s+", " ", await el.inner_text()).strip()[:200]
+    return None
+
+
+# 그룹사진 업로드 상태. 사진 칸(se-module-image)은 올리는 동안 se-is-progress가 붙고, 끝나면 빠집니다.
+# 슬라이드는 화면에 보이는 사진만 실제 주소로 불러오고 나머지는 자리 이미지(data:image/svg)로 두므로
+# 모든 사진의 주소가 http가 되기를 기다리면 안 됩니다(2026-11-26 실제 에디터, 5장 슬라이드에서 멈춤).
+_GROUP_STATE_JS = """
+(comp) => {
+  const mods = [...comp.querySelectorAll('.se-module-image')];
+  return {total: mods.length,
+          busy: mods.filter(m => m.classList.contains('se-is-progress')).length,
+          http: mods.filter(m => /^https?:/.test((m.querySelector('img') || {}).src || '')).length,
+          cls: comp.className};
+}
+"""
+
+
+async def insert_gallery(frame: Frame, paths: list[Path], layout: str = "slide", timeout_s: float = 240) -> None:
+    """사진 2~10장을 한 번에 골라 그룹사진 블록 하나로 넣습니다. layout: slide(옆으로 넘기는 슬라이드) 또는 collage(콜라주).
+
+    사진 버튼 → 파일 여러 개 선택 → '사진 첨부 방식' 창에서 콜라주/슬라이드 → 그룹사진 블록의 사진이 모두 http 주소로
+    바뀔 때까지 기다립니다(실제 에디터에서 확인한 순서). 업로드 오류 창이 뜨면 저장하지 않고 멈춥니다.
+    """
+    if layout not in ("slide", "collage"):
+        raise EditorError(f"그룹사진 방식은 slide 또는 collage입니다: {layout}")
+    if not 2 <= len(paths) <= 10:
+        raise EditorError(f"그룹사진은 2~10장입니다({len(paths)}장).")
+    page = frame.page
+    before = await frame.locator(S.IMAGE_GROUP_COMPONENT).count()
+    btn = await first_visible(frame, S.IMAGE_BUTTON, timeout_ms=5000, names=S.IMAGE_BUTTON_NAMES)
+    if not btn:
+        raise EditorError("사진 버튼을 찾지 못했습니다.")
+    files = [str(p) for p in paths]
+    try:
+        async with page.expect_file_chooser(timeout=6000) as fc_info:
+            await safe_click(btn)
+        await (await fc_info.value).set_files(files)
+    except PWTimeout:
+        for sel in S.FILE_INPUT:
+            loc = frame.locator(sel)
+            if await loc.count() > 0:
+                await loc.first.set_input_files(files)
+                break
+        else:
+            raise EditorError("파일 선택 창이나 파일 입력 요소를 찾지 못했습니다.") from None
+    popup = await first_visible(frame, S.IMAGE_TYPE_POPUP, timeout_ms=15000)
+    if not popup:
+        raise EditorError("사진을 여러 장 골랐는데 '사진 첨부 방식' 창이 뜨지 않았습니다.")
+    option = popup.locator(S.IMAGE_TYPE_INPUT.format(layout=layout))
+    if await option.count() and await option.first.is_disabled():
+        raise EditorError(f"'사진 첨부 방식'에서 {layout}을(를) 고를 수 없습니다(그룹사진은 최대 10장).")
+    await safe_click(popup.locator(S.IMAGE_TYPE_LABEL.format(layout=layout)).first)
+    started = time.monotonic()
+    group = await _wait_count_increase(frame, S.IMAGE_GROUP_COMPONENT, before, 30, "그룹사진")
+    deadline = started + timeout_s
+    state: dict = {}
+    while time.monotonic() < deadline:
+        error = await _upload_error(frame)
+        if error:
+            raise EditorError(f"네이버가 사진 업로드를 거부했습니다: {error}")
+        try:
+            state = await group.evaluate(_GROUP_STATE_JS)
+        except Exception:
+            state = {}
+        if (state.get("total") == len(paths) and state.get("busy") == 0 and state.get("http", 0) >= 1
+                and not await first_visible(frame, S.UPLOAD_PROGRESS)):
+            if f"se-l-{layout}" not in state.get("cls", ""):
+                raise EditorError(f"그룹사진이 {layout} 방식으로 만들어지지 않았습니다: {state.get('cls')}")
+            await asyncio.sleep(0.3)
+            return
+        await asyncio.sleep(0.5)
+    raise EditorError(f"그룹사진 업로드가 끝나지 않았습니다(사진 칸 {state.get('total', 0)}/{len(paths)}개, 올리는 중 {state.get('busy', '?')}개).")
 
 
 _UPLOAD_STATE_JS = """
@@ -660,6 +846,9 @@ async def wait_upload_done(frame: Frame, image: Locator, timeout_s: float, name:
             state = await image.evaluate(_UPLOAD_STATE_JS, S.IMAGE_UPLOADING)
         except Exception:
             state = {}
+        error = await _upload_error(frame)
+        if error:
+            raise EditorError(f"네이버가 사진 업로드를 거부했습니다: {name}: {error}")
         progress = await first_visible(frame, S.UPLOAD_PROGRESS)
         if state.get("loaded") and not state.get("busy") and not progress:
             await asyncio.sleep(0.3)

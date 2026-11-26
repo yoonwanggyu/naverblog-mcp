@@ -109,6 +109,9 @@ def read_exif(path: Path) -> dict[str, Any]:
             model = exif.get(272)
             if model:
                 info["camera"] = str(model).strip()
+            make = exif.get(271)
+            if make:
+                info["camera_make"] = str(make).strip()
             gps = exif.get_ifd(0x8825)
             if gps:
                 tags = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps.items()}
@@ -284,11 +287,164 @@ def scan_folder(folder: Path, recursive: bool = False) -> list[dict[str, Any]]:
             continue
         item["taken_at"], item["time_source"] = capture_time(p, item)
         items.append(item)
-    # 촬영 시각순(두 사람이 올린 사진도 섞어서). 같은 시각이면 파일 이름순.
-    items.sort(key=lambda x: (x["taken_at"], x["path"]))
+    # 촬영 시각순(두 사람이 올린 사진도 섞어서). 같은 시각이면 파일 이름의 숫자순(필름카메라 2 → 10, 글자순이면 10이 먼저).
+    items.sort(key=lambda x: (x["taken_at"], natural_key(x["path"])))
     for i, it in enumerate(items, 1):
         it["order"] = i
     return items
+
+
+# 사진 묶음: '만복국수집1.jpeg', '만복국수집2.jpeg'처럼 이름이 같고 끝 번호만 다른 사진. 카메라 기본 이름은 묶지 않습니다.
+GROUP_MAX = 10   # 네이버 그룹사진(콜라주, 슬라이드) 한 묶음 최대 장수. 실제 에디터 안내문 '그룹사진은 최대 10장의 사진으로 만들 수 있습니다'
+STRIP_MAX = 3    # 나란히(se-imageStrip) 한 줄 최대 장수. 공개 리뷰 40편에서 2장, 3장 줄만 확인했고 실제 에디터에서 3장까지 만들었습니다
+_TRAILING_NO = re.compile(r"[\s_\-.()]*\(?(\d{1,3})\)?$")
+_CAMERA_NAME = re.compile(r"^(img|dsc|dscn|dscf|pxl|mvimg|vid|mov|photo|image|kakaotalk|screenshot|screen shot|스크린샷|사진|"
+                          r"제목 없음|untitled|p)[\s_\-]*$|^[\d\s_\-.]*$", re.I)
+
+
+def name_stem(path: str | Path) -> tuple[str, int] | None:
+    """파일 이름에서 끝 번호를 뗀 이름과 번호. 번호가 없으면 1번으로 봅니다. 카메라 기본 이름(IMG_1234 등)은 None."""
+    stem = unicodedata.normalize("NFC", Path(path).stem).strip()
+    m = _TRAILING_NO.search(stem)
+    base, no = (stem[:m.start()], int(m.group(1))) if m and m.start() > 0 else (stem, 1)
+    base = re.sub(r"[\s_\-.]+$", "", base)
+    if not base or _CAMERA_NAME.match(base) or re.match(r"^(IMG|DSC|PXL|KakaoTalk)[_\-]?\d|^(스크린샷|screenshot|screen shot)", stem, re.I):
+        return None
+    return base, no
+
+
+def photo_groups(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """scan 결과(order 순)에서 이름이 같고 번호만 다른 사진 묶음과 글 유형 힌트를 만듭니다.
+
+    묶음은 2장 이상만, 안의 순서는 파일 번호순입니다. 10장(그룹사진 한도)을 넘으면 10장씩 나눕니다.
+    여러 장소의 이름이 붙은 사진이 많으면 '모음집' 힌트를 줍니다. 판단은 Claude가 사용자 요청과 함께 합니다.
+    """
+    named: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    unnamed = 0
+    for it in items:
+        if it.get("kind") != "image" or it.get("camera_kind"):   # 카메라 사진은 camera_groups로 따로 묶습니다
+            continue
+        key = name_stem(it["path"])
+        if key is None:
+            unnamed += 1
+            continue
+        named.setdefault(key[0], []).append((key[1], it))
+    groups: list[dict[str, Any]] = []
+    for base, members in named.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda m: (m[0], m[1]["path"]))
+        for start in range(0, len(members), GROUP_MAX):
+            part = members[start:start + GROUP_MAX]
+            groups.append({"name": base, "paths": [m[1]["path"] for m in part], "orders": [m[1]["order"] for m in part]})
+    groups.sort(key=lambda g: min(g["orders"]))
+    images = sum(1 for it in items if it.get("kind") == "image" and not it.get("camera_kind"))
+    is_collection = len(named) >= 5 and len(named) * 2 >= images - unnamed and unnamed * 2 <= images
+    hint = {
+        "post_kind_hint": "collection" if is_collection else "single",
+        "named_places": len(named),
+        "reason": (f"사진 {images}장 중 {images - unnamed}장이 서로 다른 이름 {len(named)}개로 붙어 있습니다(여러 장소 모음으로 보임)."
+                   if is_collection else "파일 이름으로는 여러 장소 모음이 아닙니다(장소 한 곳 또는 하루 코스로 보임)."),
+    }
+    return groups, hint
+
+
+# 핸드폰이 아닌 카메라 사진: 파일 이름 낱말을 먼저 보고, 없으면 EXIF 제조사·모델을 봅니다.
+_CAMERA_WORDS = [("필름카메라", re.compile(r"필름|필카|film", re.I)),
+                 ("DSLR", re.compile(r"dslr|dsl|디에스엘알", re.I)),
+                 ("미러리스", re.compile(r"미러리스|mirrorless", re.I)),
+                 ("디지털카메라", re.compile(r"디카|디지털\s?카메라|똑딱이|compact\s?cam", re.I))]
+_PHONE = re.compile(r"iphone|ipad|galaxy|^sm-|pixel|xiaomi|redmi|^lg-|oneplus|huawei|oppo|vivo|nothing|motorola|samsung", re.I)
+_SCANNER = re.compile(r"noritsu|frontier|fuji\s?film\s?sp|scanner|scan|epson|plustek|pakon|coolscan", re.I)
+_CAMERA_MAKERS = re.compile(r"canon|nikon|sony|fujifilm|fuji|olympus|om digital|panasonic|leica|pentax|ricoh|sigma|hasselblad|kodak|gopro|dji", re.I)
+
+
+def camera_kind(path: str | Path, item: dict[str, Any] | None = None) -> dict[str, str] | None:
+    """핸드폰이 아닌 카메라로 찍은 사진이면 {'label': 종류, 'device': 기기, 'source': 'file_name'|'exif'}. 핸드폰이나 알 수 없으면 None.
+
+    1) 파일 이름에 '필름', 'film', 'DSLR', '미러리스', '디카' 같은 말이 있으면 그 종류.
+    2) EXIF 기기가 필름 스캐너면 필름카메라, 카메라 제조사(Canon, Sony, Fujifilm 등)면 카메라. 핸드폰 기기면 None.
+    """
+    stem = unicodedata.normalize("NFC", Path(path).stem)
+    for label, pat in _CAMERA_WORDS:
+        if pat.search(stem):
+            return {"label": label, "device": "", "source": "file_name"}
+    if item is None:
+        try:
+            item = read_exif(Path(path)) if Path(path).suffix.lower() in IMAGE_EXT else {}
+        except Exception:
+            item = {}
+    model, make = (item.get("camera") or "").strip(), (item.get("camera_make") or "").strip()
+    device = model if make.lower() in model.lower() else f"{make} {model}".strip()
+    if not device or _PHONE.search(model) or _PHONE.search(make):
+        return None
+    if _SCANNER.search(device):
+        return {"label": "필름카메라", "device": device, "source": "exif"}
+    if _CAMERA_MAKERS.search(device):
+        return {"label": _camera_type(device), "device": device, "source": "exif"}
+    return None
+
+
+# 기종 이름으로 DSLR과 미러리스를 나눕니다. 모르면 '카메라'. 예: Canon EOS 5D Mark II → DSLR, Canon EOS R6 → 미러리스
+_DSLR_MODEL = re.compile(r"canon eos(?! ?[rm]\d?\b)(?! ?r\d| ?m\d)|nikon d\d|pentax k|eos \d+d|eos kiss|rebel", re.I)
+_MIRRORLESS_MODEL = re.compile(r"eos ?r\d*\b|eos ?m\d*\b|nikon z|ilce|nex-|sony a\d|x-?t\d|x-?e\d|x-?s\d|x-?pro|x-?h\d|gfx|"
+                               r"om-\d|e-m\d|e-p\d|dc-g|dc-s|dmc-g|lumix|leica (sl|cl|q|m)", re.I)
+
+
+def _camera_type(device: str) -> str:
+    if _MIRRORLESS_MODEL.search(device):
+        return "미러리스"
+    if _DSLR_MODEL.search(device):
+        return "DSLR"
+    return "카메라"
+
+
+def split_even(paths: list[Any], most: int) -> list[list[Any]]:
+    """한 블록 한도(most)에 맞게 고르게 나눕니다. 11장/10 → 6+5, 29장/10 → 10+10+9, 4장/3 → 2+2, 7장/3 → 3+2+2."""
+    n = -(-len(paths) // most)
+    size, extra = divmod(len(paths), n)
+    out, i = [], 0
+    for k in range(n):
+        step = size + (1 if k < extra else 0)
+        out.append(paths[i:i + step])
+        i += step
+    return out
+
+
+def natural_key(path: str | Path) -> list:
+    """파일 이름을 숫자는 숫자로 비교하는 정렬 키('필름카메라 2' < '필름카메라 10')."""
+    name = unicodedata.normalize("NFC", Path(path).name).lower()
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
+
+
+def _film_key(path: str | Path) -> tuple:
+    """필름 스캔 정렬 키: 끝 번호가 없는 첫 장('…필름카메라.JPG')은 1번, 그다음 '…필름카메라 2', '…필름카메라 3' 순."""
+    stem = unicodedata.normalize("NFC", Path(path).stem)
+    m = _TRAILING_NO.search(stem)
+    return (stem[:m.start()], int(m.group(1))) if m and m.start() > 0 else (stem, 1)
+
+
+def camera_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """핸드폰이 아닌 카메라 사진을 종류(label)별로 묶습니다. 글에서는 마무리 상자 위의 '○○ 컷' 구역으로 씁니다.
+
+    묶음 안 순서: 디지털 카메라는 촬영 순서(order). 필름카메라는 사진의 시각 정보가 촬영이 아니라 스캔 시각이라
+    파일 이름의 숫자순(필름카메라 2 → 3 → … → 29)으로 둡니다(후쿠오카 폴더에서 스캔 시각순이 22 → 26 → 11로 섞임, 2026-11-26).
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for it in items:
+        kind = it.get("camera_kind")
+        if it.get("kind") != "image" or not kind:
+            continue
+        g = groups.setdefault(kind["label"], {"label": kind["label"], "devices": [], "paths": [], "orders": []})
+        if kind["device"] and kind["device"] not in g["devices"]:
+            g["devices"].append(kind["device"])
+        g["paths"].append(it["path"])
+        g["orders"].append(it["order"])
+    for g in groups.values():
+        if g["label"] == "필름카메라":
+            pairs = sorted(zip(g["paths"], g["orders"], strict=True), key=lambda x: _film_key(x[0]))
+            g["paths"], g["orders"] = [p for p, _ in pairs], [o for _, o in pairs]
+    return sorted(groups.values(), key=lambda g: min(g["orders"]))
 
 
 def preview_jpeg(path: Path, max_side: int = 1024, quality: int = 82) -> bytes:
