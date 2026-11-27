@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,7 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from .. import config
-from . import agy_acp, media, writing_packet
+from . import agy_acp, formatting, media, writing_packet
 from .writing_packet import LOCAL_OR_URL, Packet, Short
 
 # 빈 문자열 줄은 문단 사이 빈 줄입니다(가이드의 '생각이 바뀌는 곳에 빈 줄'). 실제 Gemini 원고에서 확인했습니다.
@@ -26,12 +27,15 @@ MAX_TEXT_LINES = 60
 Visual = Annotated[str, StringConstraints(pattern=r"^V[1-9]\d{0,3}$")]
 
 
+log = logging.getLogger(__name__)
+
+
 class Part(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     slot: int
     visuals: list[Visual] = Field(default_factory=list, max_length=60)   # 이 글 바로 위에 놓을 사진(V번호)
     layout: Literal["single", "strip", "collage", "slide"] | None = None
-    lines: list[Line] = Field(min_length=1, max_length=MAX_TEXT_LINES)
+    lines: list[Line] = Field(max_length=MAX_TEXT_LINES)   # 사진만 놓는 text 자리는 빈 목록(억지 사진 설명을 막음)
 
 
 class Skip(BaseModel):
@@ -72,6 +76,10 @@ def _photo_blocks(packet: Packet, part: Part, kind: str, used: set[int]) -> list
         return [{"type": "image", "path": p} for p in paths]
     if len(paths) < 2:
         raise ValueError(f"Gemini 원고의 {part.slot}번 자리: {layout}은 사진 2장 이상입니다({len(paths)}장).")
+    if layout == "collage":   # 발행 전에 크기를 조절할 수 없어 쓰지 않습니다(사용자 요청). 2~3장은 나란히, 4장 이상은 슬라이드로 바꿉니다.
+        layout = "strip" if len(paths) <= media.STRIP_MAX else "slide"
+    if layout == "slide" and len(paths) <= media.STRIP_MAX:   # 2~3장은 나란히(사용자가 발행 때 2~3장 묶음을 모두 나란히로 바꿈)
+        layout = "strip"
     # 한 자리에 한도(나란히 3장, 콜라주·슬라이드 10장)보다 많이 놓으면 같은 배치로 고르게 나눕니다(예: 필름 사진 29장 → 슬라이드 10·10·9).
     most = media.STRIP_MAX if layout == "strip" else media.GROUP_MAX
     return [{"type": "gallery", "layout": layout, "paths": chunk} for chunk in media.split_even(paths, most)]
@@ -129,6 +137,8 @@ def assemble(packet: Packet, response: str) -> dict:
         if slot.kind != "subtitle":   # text·fill은 사진 다음에 글, subtitle은 제목 아래에 사진('필름카메라 컷' 같은 사진 구역)
             blocks += photo
         part.lines = _clean_lines(slot.kind, part.lines)
+        if not part.lines and slot.kind == "text" and photo:
+            continue   # 사진만 놓는 자리: 글 블록을 만들지 않습니다
         if not part.lines:
             raise ValueError(f"Gemini 원고의 {part.slot}번 자리가 비어 있습니다.")
         if any("\n" in line or "\r" in line for line in part.lines) or LOCAL_OR_URL.search(" ".join(part.lines)):
@@ -151,7 +161,9 @@ def assemble(packet: Packet, response: str) -> dict:
     return {"title": copy.title, "blocks": blocks,
             "photo_layout": _layout_summary(blocks),
             "skipped_photos": [{"visual": f"V{i + 1}", "reason": r} for i, r in skipped.items() if i not in used],
-            "unplaced_photos": unplaced}
+            "unplaced_photos": unplaced,
+            # 사진·배치 설명이나 작업 과정이 새어 나온 줄. Claude가 지운 뒤 dry_run합니다(남으면 임시저장 거부).
+            "remove_lines": formatting.meta_lines(blocks)}
 
 
 def _layout_summary(blocks: list[dict]) -> dict[str, int]:
@@ -178,12 +190,12 @@ FALLBACK = ("Gemini에 다시 요청하지 않습니다. 사용자에게 실패 
 FAILED_DIR_KEEP = 5
 
 
-def _keep_failed(generation_id: str, response: str):
-    """형식 오류 원인을 확인할 수 있게 실패한 원문을 로컬에만 남깁니다(최근 5개). 외부로 보내지 않습니다."""
+def _keep_failed(generation_id: str, response: str, message: str = ""):
+    """실패 이유와 원문을 로컬에만 남깁니다(최근 5개). 외부로 보내지 않습니다. 첫 줄이 실패 이유입니다."""
     folder = config.HOME / "gemini_failed"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{time.strftime('%Y%m%d_%H%M%S')}_{generation_id[:8]}.txt"
-    path.write_text(response, encoding="utf-8")
+    path.write_text(f"# 실패 이유: {message}\n{response}", encoding="utf-8")
     for old in sorted(folder.glob("*.txt"))[:-FAILED_DIR_KEEP]:
         old.unlink(missing_ok=True)
     return path
@@ -226,8 +238,9 @@ async def start(packet_id: str) -> dict:
         except Exception:
             message = "agy 실행 또는 응답 읽기 실패. 터미널의 agy 로그인과 AGY_PATH를 확인하세요."
         out = {"status": "failed", "message": message, "packet_id": packet_id, "fallback": FALLBACK}
+        log.warning("Gemini 문안 실패(%s): %s", generation_id[:8], message)   # 2탄 실패 이유가 남지 않았던 문제(2026-11-27)
         if response is not None:
-            out["raw_saved"] = str(_keep_failed(generation_id, response))
+            out["raw_saved"] = str(_keep_failed(generation_id, response, message))
         return out
 
     _latest = Generation(generation_id, packet_id, asyncio.create_task(run()))

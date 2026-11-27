@@ -36,7 +36,8 @@ SPONSOR_WORDS = ("협찬", "광고", "제공받", "원고료", "지원받", "대
 
 # 맛 평가, 외관 후기, 느낀 점처럼 사람의 주관이 필요한 자리에 넣는 문구. 사용자가 발행 전에 직접 채웁니다.
 PLACEHOLDER = "[이 부분에 직접 입력하시기 바랍니다]"
-# 직접 입력 자리 아래에 붙는 추천 문구 줄의 머리말. 사용자가 고르거나 고쳐 쓰고, 이 머리말 줄은 발행 전에 지웁니다.
+# 예전에 추천 문구 줄 앞에 붙이던 머리말. 지우는 데 시간이 많이 든다는 사용자 피드백으로 더는 붙이지 않습니다(2026-11-28).
+# 예전 글이나 사용자가 직접 쓴 표시를 알아보는 데만 씁니다.
 SUGGESTION_PREFIX = "(추천 문구)"
 CHECK_MARK = re.compile(r"\[\[확인필요[^\]]*\]\]")
 # 사용자 메모 없이 Claude가 쓰면 안 되는 주관 표현(경고만 하고 저장은 막지 않습니다).
@@ -96,7 +97,7 @@ def layout_preview(blocks: list[dict]) -> dict:
     for b in blocks:
         typ = b.get("type")
         if typ in ("text", "fill"):
-            n = sum(len(p) for p in to_paragraphs(b.get("text") or "" if typ == "text" else render_fill(b.get("suggestions"))))
+            n = sum(len(p) for p in (to_paragraphs(b.get("text") or "") if typ == "text" else fill_paragraphs(b.get("suggestions"))))
             label = f"글 {n}줄" if typ == "text" else f"직접 입력({b.get('topic') or '-'})"
             if out and out[-1].startswith("글 ") and typ == "text":
                 out[-1] = f"글 {int(out[-1].split()[1][:-1]) + n}줄"
@@ -165,13 +166,18 @@ def to_paragraphs(text: str, keep: bool = False) -> list[list[str]]:
 
 
 def render_fill(suggestions: list[str] | None) -> str:
-    """fill 블록(직접 입력 자리 + 추천 문구)을 본문 텍스트로 바꿉니다."""
+    """fill 블록(직접 입력 자리 + 추천 문구)을 본문 텍스트로 바꿉니다. 추천 문구 줄에는 머리말을 붙이지 않습니다(사용자 피드백)."""
     lines = [PLACEHOLDER]
     for s in suggestions or []:
         s = clean_line(s)
         if s:
-            lines.append(f"{SUGGESTION_PREFIX} {s}")
+            lines.append(s)
     return "\n".join(lines)
+
+
+def fill_paragraphs(suggestions: list[str] | None) -> list[list[str]]:
+    """fill 블록의 에디터 문단: 직접 입력 자리 한 줄 + 추천 문구 한 줄씩. 추천 문구는 자동으로 나누지 않습니다."""
+    return to_paragraphs(render_fill(suggestions), keep=True)
 
 
 def plain_len(text: str) -> int:
@@ -234,6 +240,10 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
             worst_run = max(worst_run, photo_run)
         elif typ not in ("place", "divider"):
             photo_run = 0
+    meta = meta_lines(blocks)
+    if meta:
+        w.append(f"독자에게 필요 없는 줄 {len(meta)}개(사진·배치 설명, 작업 과정): {[x[:24] for x in meta[:5]]}. 지우세요. "
+                 "사진만으로 충분한 자리는 글을 쓰지 않습니다. 남아 있으면 임시저장을 거부합니다.")
     if worst_run >= 4:
         w.append(f"사진 블록 {worst_run}개가 글 없이 이어집니다. 모바일에서 사진만 길게 내려갑니다. 같은 장면이나 같은 곳 사진이면 "
                  "나란히(strip)·콜라주·슬라이드로 묶거나, 사이에 1~2줄을 넣으세요(스타일 가이드 4-6절).")
@@ -336,13 +346,42 @@ def lint(title: str, blocks: list[dict], tags: list[str] | None, sponsored: str 
     if n_ph == 0 and n_img >= 3:
         w.append("주관 평가 자리가 없습니다. 맛 평가, 외관 후기, 느낀 점은 직접 쓰지 말고 fill 블록(직접 입력 자리 + 추천 문구)으로 남기세요.")
     if any(b.get("type") == "fill" and not b.get("suggestions") for b in blocks):
-        w.append("추천 문구가 없는 fill 블록이 있습니다. 상황에 맞는 추천 문구를 2~3개 넣으세요(스타일 가이드 2-2절).")
+        w.append("추천 문구가 없는 fill 블록이 있습니다. 상황에 맞는 추천 문구를 3개 넣으세요(스타일 가이드 2-2절).")
+    off3 = [b.get("topic") or "-" for b in blocks if b.get("type") == "fill" and b.get("suggestions") and len(b["suggestions"]) != 3]
+    if off3:
+        w.append(f"추천 문구가 3개가 아닌 fill {len(off3)}곳: {off3[:3]}. 사용자가 골라 고쳐 쓰도록 3개씩 넣으세요.")
     subj = [x for t in texts for ln in t.split("\n") if not ln.strip().startswith((PLACEHOLDER, SUGGESTION_PREFIX))
             for x in split_sentences(ln) if SUBJECTIVE.search(x)]
     if subj:
         w.append(f"주관 평가로 보이는 문장 {len(subj)}개: {[x[:30] for x in subj[:3]]}. 사용자 메모에 있는 평가가 아니면 "
                  f"fill 블록의 추천 문구로 옮기세요.")
     return w
+
+
+# 본문에 들어가면 안 되는 줄: 사진·배치를 설명하는 말과 작업 과정·내부 메모. 독자가 읽을 말이 아닙니다.
+# 실제 예(2026-11-27 상암 모음 1~3탄): '라멘 사진 2장을 나란히', '사진 3장을 콜라주로 묶었어요', '버거 세트 사진 한 장',
+# '지도 미등록 · 망고 컵 사진 한 장', '상호를 몰라 지도는 빠졌어요', '폴더 이름 그대로 26년 1월~6월 기록이고'.
+META_LINE = re.compile(
+    r"사진\s?(\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s?장"
+    r"|\d+\s?장(을|을\s?다|만)?\s?(나란히|묶|모았|모아|담았|두었|넣었|한\s?번에|연달아|이어)"
+    r"|(나란히|옆으로|한\s?줄로|연달아)\s?(담|두었|뒀|놓|배치|붙|모았|넣었)"
+    r"|(콜라주|슬라이드|개별\s?사진)(로|를|에|처럼)"
+    r"|사진(을|은|들을|들은)?\s?(묶|모았|모아\s?(봤|뒀|두었)|배치|나란히|한\s?번에)"
+    r"|지도\s?(미등록|없음|는\s?빠|가\s?빠|를\s?못|를\s?넣지|가\s?없|는\s?없)"
+    r"|(한\s?상|한\s?장|한\s?컷)에\s?(모았|담았|모아)"   # '여러 메뉴를 한 상에 모았어요'(발행 때 사용자가 지운 줄)
+    r"|상호를?\s?(몰라|모르)|폴더\s?(이름|명)"   # '이번 1탄은 1번~22번 가게예요'는 사용자가 남긴 줄이라 잡지 않음
+)
+
+
+def meta_lines(blocks: list[dict]) -> list[str]:
+    """글(text)·소제목·마무리 상자에서 사진·배치 설명이나 작업 과정이 새어 나온 줄. 추천 문구(fill)는 보지 않습니다."""
+    out: list[str] = []
+    for b in blocks:
+        if b.get("type") in ("text", "subtitle", "quote"):
+            for ln in (b.get("text") or "").split("\n"):
+                if META_LINE.search(visible(clean_line(ln))):
+                    out.append(clean_line(ln))
+    return out
 
 
 def count_placeholders(title: str, blocks: list[dict]) -> dict[str, int]:

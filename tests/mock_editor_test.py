@@ -29,7 +29,7 @@ tmp = Path(tempfile.mkdtemp(prefix="nbw_test_"))
 media_dir = tmp / "media"
 media_dir.mkdir()
 for name, color in (("a.jpg", (40, 120, 200)), ("b.jpg", (200, 80, 40)), ("c.jpg", (20, 160, 60)),
-                    ("만복1.jpg", (90, 90, 200)), ("만복2.jpg", (90, 200, 90)), ("만복3.jpg", (200, 90, 90)),
+                    ("만복1.jpg", (90, 90, 200)), ("만복2.jpg", (90, 200, 90)), ("만복3.jpg", (200, 90, 90)), ("만복4.jpg", (90, 200, 200)),
                     ("식락1.jpg", (10, 10, 10)), ("식락2.jpg", (240, 240, 240)),
                     ("핵밥1.jpg", (50, 50, 50)), ("핵밥2.jpg", (60, 60, 60)), ("핵밥3.jpg", (70, 70, 70))):
     Image.new("RGB", (800, 600), color).save(media_dir / name)
@@ -105,8 +105,8 @@ BLOCKS = [
     Block(type="text", text=f"2층은 창가 자리가 길게 이어져 있어요. {PLACEHOLDER}"),
     Block(type="fill", topic="팡도르 맛", suggestions=["겉은 바삭하고 속은 촉촉했어요", "둘이 나눠 먹기 딱 좋은 크기였어요"]),
     Block(type="image", path=str(media_dir / "b.jpg")),
-    Block(type="gallery", layout="slide", paths=[str(media_dir / f"만복{n}.jpg") for n in (1, 2, 3)]),   # 3번째는 화면 밖 자리 이미지로 남는 슬라이드
-    Block(type="gallery", layout="collage", paths=[str(media_dir / "식락1.jpg"), str(media_dir / "식락2.jpg")]),
+    Block(type="gallery", layout="slide", paths=[str(media_dir / f"만복{n}.jpg") for n in (1, 2, 3, 4)]),   # 3번째는 화면 밖 자리 이미지로 남는 슬라이드
+    Block(type="gallery", layout="strip", paths=[str(media_dir / "식락1.jpg"), str(media_dir / "식락2.jpg")]),
     Block(type="gallery", layout="strip", paths=[str(media_dir / f"핵밥{n}.jpg") for n in (1, 2, 3)]),
     Block(type="video", path=str(media_dir / "clip1.mp4"), video_title="성수 카페어니언 영상", user_selected=True),
     Block(type="place", query="카페어니언 성수동", address="킨텍스로 255 상가234호"),
@@ -161,7 +161,7 @@ async def main() -> int:
           "성수에서 데이트를 했어요.\n날씨가 정말 좋더라고요.\n첫 코스는 카페였어요.", "**카페어니언** 이야기부터 할게요"],
           str(plan["blocks"][0]["paragraphs"]))
     check("fill 블록: 직접 입력 자리 아래 추천 문구", plan["blocks"][4]["paragraphs"] == [
-          f"{PLACEHOLDER}\n(추천 문구) 겉은 바삭하고 속은 촉촉했어요\n(추천 문구) 둘이 나눠 먹기 딱 좋은 크기였어요"],
+          f"{PLACEHOLDER}\n겉은 바삭하고 속은 촉촉했어요\n둘이 나눠 먹기 딱 좋은 크기였어요"],
           str(plan["blocks"][4]["paragraphs"]))
     check("직접 입력 자리는 독립 문단", plan["blocks"][3]["paragraphs"] == ["2층은 창가 자리가 길게 이어져 있어요.", PLACEHOLDER],
           str(plan["blocks"][3]["paragraphs"]))
@@ -178,7 +178,7 @@ async def main() -> int:
     doc = cap.get("doc") or []
     kinds = [d.get("cls", "img").split()[0] if "cls" in d else "img" for d in doc]
     seq = [k for k in kinds if k != "se-text"]
-    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-imageGroup", "se-imageGroup", "se-imageStrip", "se-video", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
+    check("블록 순서", seq == ["se-documentTitle", "se-quotation", "img", "img", "se-imageGroup", "se-imageStrip", "se-imageStrip", "se-video", "se-placesMap", "se-placesMap", "se-horizontalLine", "se-quotation",
                             "se-quotation", "se-oglink"], str(kinds))
     texts_before_card = [d.get("text", "") for d in doc[:-1]]
     check("내 글 링크: 주소 줄 아래 카드, 그 아래 태그", kinds[-2:] == ["se-oglink", "se-text"]
@@ -203,20 +203,20 @@ async def main() -> int:
     lines1 = [re.sub(r"<[^>]+>|&nbsp;", "", p["html"]).strip() for p in (doc[1].get("paras", []) if len(doc) > 1 else [])]
     check("묶음 안은 한 줄씩, 묶음 사이 빈 줄", lines1[2:7] == ["성수에서 데이트를 했어요.", "날씨가 정말 좋더라고요.", "첫 코스는 카페였어요.", "",
                                                     "카페어니언 이야기부터 할게요"], str(lines1[:8]))
-    check("추천 문구 입력", any("(추천 문구) 겉은 바삭하고 속은 촉촉했어요" in d.get("text", "") for d in doc))
+    check("추천 문구 입력(머리말 없음)", any("겉은 바삭하고 속은 촉촉했어요" in d.get("text", "") for d in doc)
+          and not any("(추천 문구)" in d.get("text", "") for d in doc))
     check("직접 입력 문구 입력", any(PLACEHOLDER in d.get("text", "") for d in doc))
     check("사진 설명 입력", any(d.get("caption") == "성수 카페어니언 2층 창가 자리" for d in doc))
     imgs = [d for d in doc if "img" in d]
     check("사진 업로드 완료 후 진행", len(imgs) == 2 and all(d["src"].startswith("uploaded.svg") for d in imgs), str([d.get("src") for d in imgs]))
     check("업로드 진행 팝업의 취소를 누르지 않음", cap.get("upload_canceled") is False)
     groups = [d for d in doc if d.get("cls", "").startswith("se-imageGroup")]
-    check("그룹사진: 여러 장을 한 번에 골라 슬라이드 1블록(3장, 번호순), 콜라주 1블록(2장)",
-          len(groups) == 2 and "se-l-slide" in groups[0]["cls"] and "se-l-collage" in groups[1]["cls"]
-          and [n.split(".")[0][:3] for n in groups[0]["imgs"]] == ["만복1", "만복2", "만복3"] and len(groups[1]["imgs"]) == 2, str(groups))
+    check("그룹사진: 여러 장을 한 번에 골라 슬라이드 1블록(4장, 번호순)",
+          len(groups) == 1 and "se-l-slide" in groups[0]["cls"] and [n.split(".")[0][:3] for n in groups[0]["imgs"]] == ["만복1", "만복2", "만복3", "만복4"], str(groups))
     strips = [d for d in doc if d.get("cls", "").startswith("se-imageStrip")]
-    check("나란히: 사진을 하나씩 넣고 끌어다 놓아 3장 한 줄(번호순), 선택 해제 후 끌기, 끝 가장자리 대신 안쪽에 놓기",
-          len(strips) == 1 and "se-imageStrip3" in strips[0]["cls"] and [n.split(".")[0][:3] for n in strips[0]["imgs"]] == ["핵밥1", "핵밥2", "핵밥3"],
-          str(strips))
+    check("나란히: 사진을 하나씩 넣고 끌어다 놓아 2장·3장 한 줄(번호순), 선택 해제 후 끌기, 끝 가장자리 대신 안쪽에 놓기",
+          len(strips) == 2 and "se-imageStrip2" in strips[0]["cls"] and "se-imageStrip3" in strips[1]["cls"]
+          and [n.split(".")[0][:3] for n in strips[1]["imgs"]] == ["핵밥1", "핵밥2", "핵밥3"], str(strips))
     places = [d["text"] for d in doc if d.get("cls", "").startswith("se-placesMap")]
     check("주소가 같은 장소 선택(동 붙은 검색어 0건 → 상호명만)", len(places) == 2 and "킨텍스로 255" in places[0] and "본점" not in places[0], str(places))
     check("주소가 맞는 지점이 없으면 다른 지점을 넣지 않고 상호명만으로 다시 검색", len(places) == 2 and "킨텍스로 255" in places[1], str(places[1:]))
@@ -257,6 +257,24 @@ async def main() -> int:
         check("사진 글에 직접 입력 자리(fill)가 없으면 거부", False, "통과해 버림")
     except ValueError as e:
         check("사진 글에 직접 입력 자리(fill)가 없으면 거부", "fill" in str(e) and "추천 문구" in str(e), str(e)[:60])
+    meta_blocks = BLOCKS[:2] + [Block(type="text", text="라멘 사진 2장을 나란히\n상호를 몰라 지도는 빠졌어요")] + BLOCKS[2:]
+    plan_meta = json.loads((await write_post(title=TITLE, blocks=meta_blocks, tags=TAGS, dry_run=True))[1])
+    check("dry_run은 필요 없는 줄을 경고로 보여 줌", any("독자에게 필요 없는 줄 2개" in x for x in plan_meta["lint_warnings"]))
+    try:
+        await write_post(title=TITLE + " 메타", blocks=meta_blocks, tags=TAGS, review_seconds=0)
+        check("필요 없는 줄이 남으면 임시저장 거부", False, "통과해 버림")
+    except ValueError as e:
+        check("필요 없는 줄이 남으면 임시저장 거부", "라멘 사진 2장을 나란히" in str(e), str(e)[:60])
+    try:
+        Block(type="gallery", layout="collage", paths=[str(media_dir / "a.jpg"), str(media_dir / "b.jpg")])
+        check("콜라주는 거부(발행 전 크기 조절 불가)", False, "통과해 버림")
+    except ValueError as e:
+        check("콜라주는 거부(발행 전 크기 조절 불가)", "크기" in str(e) and "strip" in str(e), str(e)[:60])
+    try:
+        Block(type="gallery", layout="slide", paths=[str(media_dir / "a.jpg"), str(media_dir / "b.jpg"), str(media_dir / "c.jpg")])
+        check("2~3장 슬라이드는 거부(나란히로)", False, "통과해 버림")
+    except ValueError as e:
+        check("2~3장 슬라이드는 거부(나란히로)", "strip" in str(e), str(e)[:60])
     for layout, bad in (("slide", [str(media_dir / "a.jpg")]), ("slide", [str(media_dir / "a.jpg")] * 11),
                         ("strip", [str(media_dir / "a.jpg")] * 4), (None, [str(media_dir / "a.jpg")] * 2)):
         try:

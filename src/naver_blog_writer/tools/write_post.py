@@ -54,21 +54,21 @@ class Block(BaseModel):
     type: Literal["text", "fill", "subtitle", "quote", "divider", "image", "gallery", "video", "place", "link"] = Field(
         description="text: 글(한 줄 한 호흡, \\n으로 줄 나눔, 빈 줄로 묶음 구분), fill: 주관 평가 자리(직접 입력 문구 + 추천 문구), "
                     "subtitle: 소제목(인용구), quote: 마무리 상자(말풍선, 포스트잇, 프레임 인용구, 여러 줄), "
-                    "divider: 구분선, image: 사진 한 장, gallery: 사진 여러 장을 한 블록에(layout: strip 나란히, collage 콜라주, slide 슬라이드), "
+                    "divider: 구분선, image: 사진 한 장, gallery: 사진 여러 장을 한 블록에(layout: strip 나란히 2~3장, slide 슬라이드 4장 이상), "
                     "video: 동영상(폴더의 영상 파일 업로드), place: 장소 지도, link: 내 블로그 다른 글의 링크 카드(사용자가 요청할 때만)"
     )
     text: str | None = Field(default=None, description="text, subtitle, quote의 내용. 줄 안의 **글자**는 굵게 들어갑니다. quote는 \\n으로 2~4줄")
     topic: str | None = Field(default=None, description="fill: 사용자가 채울 내용(예: '가지튀김 맛', '총평'). 보고용")
-    suggestions: list[str] | None = Field(default=None, description="fill: 추천 문구 2~3개. '(추천 문구)' 줄로 들어가 사용자가 고르거나 지웁니다")
+    suggestions: list[str] | None = Field(default=None, description="fill: 추천 문구 3개. 직접 입력 자리 아래에 머리말 없이 한 줄씩 들어가고 사용자가 골라 고쳐 씁니다")
     style: QuoteStyle | None = Field(default=None, description="subtitle의 인용구 모양(비우면 SUBTITLE_STYLE). "
                                                                "quote는 quotation_bubble(말풍선, 기본), quotation_postit(포스트잇), quotation_corner(프레임) 중 하나")
     path: str | None = Field(default=None, description="image의 사진, video의 영상 절대경로 (scan_media 결과의 path)")
     video_title: str | None = Field(default=None, description="video의 제목(최대 40자). 비우면 글 제목을 씁니다")
     user_selected: bool = Field(default=False, description="video: 폴더에 영상이 여러 개일 때 사용자가 이 영상을 고른 뒤에만 true")
     caption: str | None = Field(default=None, description="image의 사진 설명 (선택). 전체 사진의 절반 정도에만")
-    paths: list[str] | None = Field(default=None, description="gallery의 사진 절대경로, 보일 순서대로. strip 2~3장, collage와 slide 2~10장")
+    paths: list[str] | None = Field(default=None, description="gallery의 사진 절대경로, 보일 순서대로. strip 2~3장, slide 2~10장")
     layout: Literal["strip", "collage", "slide"] | None = Field(default=None, description="gallery 배치(필수). strip: 2~3장을 한 줄에 같은 높이로 나란히(넘기지 않고 다 보임), "
-                                                                                       "collage: 여러 줄 바둑판(한눈에), slide: 옆으로 넘겨 보는 한 줄(장수가 많고 다 볼 필요 없을 때)")
+                                                                                       "slide: 옆으로 넘겨 보는 한 줄(4장 이상). collage는 쓰지 않음(발행 전에 크기 조절 불가)")
     query: str | None = Field(default=None, description="place의 검색어. find_place 결과의 place_block.query")
     address: str | None = Field(default=None, description="place의 주소. find_place 결과의 place_block.address (같은 이름 지점 구분용)")
     place_id: str | None = Field(default=None, description="place의 네이버 장소 ID. find_place 결과의 place_block.place_id (같은 장소 리뷰 확인용)")
@@ -84,7 +84,11 @@ class Block(BaseModel):
             raise ValueError(f"{self.type} 블록에는 path가 필요합니다.")
         if self.type == "gallery":
             if not self.layout:
-                raise ValueError("gallery 블록에는 layout(strip, collage, slide)이 필요합니다. 사진 이름 묶음과 photo_layout 분석으로 정합니다.")
+                raise ValueError("gallery 블록에는 layout(strip 또는 slide)이 필요합니다. 같은 곳 사진 2~3장은 strip, 4장 이상은 slide입니다.")
+            if self.layout == "collage":
+                raise ValueError("콜라주는 발행 전에 사진 크기를 조절할 수 없어 쓰지 않습니다. 2~3장은 strip(나란히), 4장 이상은 slide(슬라이드)로 넣으세요.")
+            if self.layout == "slide" and self.paths and len(self.paths) <= media.STRIP_MAX:
+                raise ValueError("사진 2~3장은 slide가 아니라 strip(나란히)으로 넣습니다. 슬라이드는 4장 이상일 때만 씁니다(사용자가 발행 때 모두 나란히로 바꿈).")
             most = media.STRIP_MAX if self.layout == "strip" else media.GROUP_MAX
             if not (self.paths and 2 <= len(self.paths) <= most):
                 raise ValueError(f"gallery({self.layout})에는 사진 2~{most}장(paths)이 필요합니다(네이버 한도). "
@@ -257,7 +261,7 @@ async def write_post(
       ready였거나, failed 뒤 read_writing_packet으로 모든 쪽을 읽었을 때만 받습니다(Claude가 Gemini 단계를 건너뛰면 거부).
     - 맛 평가, 외관 후기, 분위기 감상, 느낀 점, 추천 여부 같은 주관 평가와 사진 속 음식의 이름과 설명은 쓰지 말고
       fill 블록(topic, suggestions 2~3개, 음식은 정식 메뉴명)을 넣습니다.
-      '[이 부분에 직접 입력하시기 바랍니다]' 아래에 '(추천 문구)' 줄이 붙어 들어갑니다.
+      '[이 부분에 직접 입력하시기 바랍니다]' 아래에 추천 문구 3줄이 머리말 없이 들어갑니다.
     - text는 한 줄 한 호흡(15~28자)으로 \\n을 넣어 쓰고, 생각이 바뀌는 곳에 빈 줄을 둡니다. 32자가 넘는 줄은 자동으로 나눕니다.
       본문은 TEXT_ALIGN(기본 가운데) 정렬로 들어갑니다.
     - subtitle은 인용구로(style로 모양 선택, 기본 세로선), divider는 구분선으로, place는 지도 첨부로 들어갑니다. place는 find_place의 place_block(place_id 포함)을 그대로 씁니다.
@@ -266,7 +270,7 @@ async def write_post(
       "다른 주제도 궁금하시면" 같은 부드러운 한 줄을 둡니다. 주소 줄 아래에 지도처럼 미리보기 카드가 들어갑니다.
     - 사진과 영상은 scan_media의 order(촬영 시각) 순서대로 넣습니다. 첫 사진(대표 사진)만 예외입니다.
       사진 수는 스스로 줄이지 않습니다(흐린 사진, 거의 같은 사진, 개인정보 사진만 빼고 보고). 서버에 장수 제한은 없습니다.
-    - gallery는 사진 여러 장을 한 블록으로 넣습니다. layout은 strip(나란히 2~3장), collage(콜라주 2~10장), slide(슬라이드 2~10장) 중
+    - gallery는 사진 여러 장을 한 블록으로 넣습니다. layout은 strip(나란히 2~3장, 개별 사진을 옆으로 붙여 크기 조절 가능)과 slide(슬라이드, 4장 이상) 중(콜라주는 쓰지 않음)
       작성자가 고릅니다. 사진 이름 묶음(photo_groups), 글 유형(post_kind), 같은 장소 리뷰·내 글·최신 경향의 photo_layout을 보고
       가독성 있게 정합니다(스타일 가이드 4-6절). dry_run의 layout_preview로 모바일 화면 순서를 확인하고 고친 뒤 저장합니다.
     - video는 폴더의 영상 파일을 그대로 올립니다(위치 정보 제거). 폴더에 영상이 여러 개면 사용자에게 고르게 한 뒤
@@ -304,6 +308,10 @@ async def write_post(
         return ["검증 통과 (dry_run, 브라우저는 열지 않았습니다). lint_warnings와 overlap_warnings를 확인하고 고치세요.",
                 json.dumps(plan, ensure_ascii=False, indent=1)]
 
+    meta = formatting.meta_lines([b.model_dump() for b in blocks])
+    if meta:
+        raise ValueError(f"본문에 독자에게 필요 없는 줄이 {len(meta)}개 있습니다(사진·배치 설명이나 작업 과정): {meta[:5]}. "
+                         "이 줄들을 지우고 다시 저장하세요. 사진만으로 충분한 자리는 글을 쓰지 않습니다.")
     used = history.drafts_today()
     if used >= config.DAILY_DRAFT_LIMIT:
         raise RuntimeError(f"오늘 임시저장 {used}건으로 하루 한도({config.DAILY_DRAFT_LIMIT}건)에 도달했습니다.")
@@ -340,7 +348,7 @@ async def _process(title: str, blocks: list[Block], tags: list[str] | None, main
 
     # 텍스트 정리
     paragraphs: dict[int, list[list[str]]] = {
-        i: formatting.to_paragraphs((b.text or "") if b.type == "text" else formatting.render_fill(b.suggestions))
+        i: formatting.to_paragraphs(b.text or "") if b.type == "text" else formatting.fill_paragraphs(b.suggestions)
         for i, b in enumerate(blocks) if b.type in TEXTLIKE
     }
     sponsor_paras = formatting.to_paragraphs(sponsored, keep=True) if sponsored else []
@@ -511,7 +519,7 @@ async def _process(title: str, blocks: list[Block], tags: list[str] | None, main
                 topics = [b.topic for b in blocks if b.type == "fill" and b.topic]
                 result["user_todo"] = (f"임시저장 글에서 '{formatting.PLACEHOLDER}' {to_fill['직접_입력']}곳을 직접 쓰고"
                                        + (f"({', '.join(topics)})" if topics else "")
-                                       + f", '{formatting.SUGGESTION_PREFIX}' 줄 {to_fill['추천_문구_줄']}개는 골라 고쳐 쓰거나 지우고, "
+                                       + f", 그 아래 추천 문구 {to_fill['추천_문구_줄']}줄은 골라 고쳐 쓰거나 지우고, "
                                        f"[[확인필요]] {to_fill['확인필요']}곳을 확인해 고친 뒤 발행하세요.")
             if not check["ok"]:
                 result["next"] = "검증에서 불일치가 있습니다. 자동으로 다시 시도하지 않습니다. 사용자에게 결과를 보여 주고 재시도 여부를 물으세요."

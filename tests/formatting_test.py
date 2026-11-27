@@ -40,8 +40,13 @@ check("정보 줄은 나누지 않음", len(p[0]) == 1, str(p))
 p = f.to_paragraphs("2층은 창가 자리가 길게 이어져 있어요. " + f.PLACEHOLDER)
 check("직접 입력 문구는 따로 묶음", p == [["2층은 창가 자리가 길게 이어져 있어요."], [f.PLACEHOLDER]], str(p))
 r = f.render_fill(["겉은 바삭하고 속은 촉촉했어요", " ", "둘이 나눠 먹기 좋은 양이었어요"])
-check("fill: 직접 입력 문구 + 추천 문구 줄", r.split("\n") == [f.PLACEHOLDER, "(추천 문구) 겉은 바삭하고 속은 촉촉했어요",
-                                                     "(추천 문구) 둘이 나눠 먹기 좋은 양이었어요"], r)
+check("fill: 직접 입력 문구 + 추천 문구 줄(머리말 없음)", r.split("\n") == [f.PLACEHOLDER, "겉은 바삭하고 속은 촉촉했어요",
+                                                     "둘이 나눠 먹기 좋은 양이었어요"], r)
+long_s = "가지구이: 달큰하게 졸여져서 계속 손이 갔어요 다음에도 꼭 시킬 메뉴예요"
+check("추천 문구는 길어도 자동으로 나누지 않음", f.fill_paragraphs(["a", "b", long_s]) == [[f.PLACEHOLDER, "a", "b", long_s]],
+      str(f.fill_paragraphs(["a", "b", long_s])))
+check("추천 문구가 3개가 아니면 경고", any("3개가 아닌 fill 1곳" in x for x in lint([{"type": "fill", "topic": "맛", "suggestions": ["a", "b"]}]))
+      and not any("3개가 아닌" in x for x in lint([{"type": "fill", "topic": "맛", "suggestions": ["a", "b", "c"]}])))
 check("굵게 표시는 화면 글자에서 빠짐", f.visible("**팡도르** / 7,500원") == "팡도르 / 7,500원")
 
 # 말투와 구성 점검
@@ -135,6 +140,20 @@ check("사진만 모은 구역('필름카메라 컷')은 fill 없어도 경고 �
       not any("구역" in x for x in lint(guess[3:] + [{"type": "subtitle", "text": "필름카메라 컷"},
                                                     {"type": "gallery", "layout": "slide", "paths": ["/x/필름1.jpg", "/x/필름2.jpg"]},
                                                     {"type": "quote", "text": "끝\n댓글 주세요"}])))
+
+# 독자에게 필요 없는 줄(사진·배치 설명, 작업 과정): 2026-11-27 상암 모음 1~3탄에 실제로 들어간 문장
+bad_lines = ["라멘 사진 2장을 나란히", "사진 3장을 콜라주로 묶었어요", "솥밥 사진 2장을 나란히 두었어요", "같이 먹은 메뉴 3장을 묶었어요",
+             "메뉴 두 가지를 나란히 담았어요", "버거 세트 사진 한 장", "치킨 사진 한 장으로 마무리해요", "지도 미등록 · 망고 컵 사진 한 장",
+             "상호를 몰라 지도는 빠졌어요", "폴더 이름 그대로 26년 1월~6월 기록이고", "📍 상암IT타워 구내식당 (지도 없음) 🥗",
+             "여러 메뉴를 한 상에 모았어요"]
+good_lines = ["사진 찍기 좋은 곳이에요 📸", "창가 자리는 사진이 잘 나와요", "📍 사보이시티 지하1층 해장국집 🍲", "지도 앱으로 찾아가면 금방이에요",
+              "두 사람이 나란히 앉는 자리예요", "세 편으로 나눠 올려요", "탐라효종갱 11,000원",
+              "이번 1탄은 1번~22번 가게예요", "여러 메뉴를 나눠 먹은 날이에요", "여기 지하도 있어요!!"]   # 발행 때 사용자가 남긴 줄
+found = f.meta_lines([{"type": "text", "text": "\n".join(bad_lines + good_lines)}])
+check("사진·배치 설명과 작업 과정 줄을 잡음(실제 문장 12개)", found == bad_lines, str([x for x in bad_lines if x not in found]))
+check("정상 문장은 잡지 않음", not [x for x in good_lines if x in found], str([x for x in good_lines if x in found]))
+check("추천 문구(fill)는 검사하지 않음", f.meta_lines([{"type": "fill", "suggestions": ["사진 2장 찍을 만큼 예뻤어요", "a"]}]) == [])
+check("dry_run 경고에 필요 없는 줄 표시", any("독자에게 필요 없는 줄 2개" in x for x in lint([{"type": "text", "text": "라멘 사진 2장을 나란히\n상호를 몰라 지도는 빠졌어요"}])))
 
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} 통과")

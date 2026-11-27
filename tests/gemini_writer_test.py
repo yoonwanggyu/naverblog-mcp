@@ -183,6 +183,12 @@ async def test():
         {"slot": 1, "visuals": ["V1"], "lines": ["춘천에 다녀왔어요"]}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
         {"slot": 3, "visuals": ["V2", "V3"], "layout": "slide", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
     assert [b["type"] for b in out["blocks"]] == ["image", "text", "fill", "subtitle", "gallery", "quote"], out["blocks"]
+    # 사진만 놓는 text 자리는 글을 비워 두면 사진 블록만 들어갑니다. 사진·배치 설명 줄은 remove_lines로 알려 줍니다.
+    bare = gemini_writer.assemble(cam, json.dumps({"title": "[여행 기록] 춘천 여행 🚞", "parts": [
+        {"slot": 1, "visuals": ["V1"], "lines": []}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
+        {"slot": 3, "visuals": ["V2", "V3"], "layout": "strip", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["필름 사진 2장을 나란히 두었어요", "댓글 주세요"]}]}))
+    assert [b["type"] for b in bare["blocks"]] == ["image", "fill", "subtitle", "gallery", "quote"], bare["blocks"]
+    assert bare["remove_lines"] == ["필름 사진 2장을 나란히 두었어요"], bare["remove_lines"]
     # 한 자리에 한도보다 많이 놓으면 같은 배치로 고르게 나눕니다(필름 사진 12장 슬라이드 → 6+6, 나란히 4장 → 2+2).
     many = writing_packet.Packet("p", "", (b"x",) * 16, (Slot(kind="text", hint="본문"), Slot(kind="fill", hint="감상"), Slot(kind="subtitle", hint="필름카메라 컷"),
                                  Slot(kind="quote", hint="끝")), (), tuple(("photo", f"/a/f{i}.jpg") for i in range(16)), 0)
@@ -191,6 +197,16 @@ async def test():
         {"slot": 3, "visuals": [f"V{i}" for i in range(5, 17)], "layout": "slide", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
     assert [(b["type"], len(b.get("paths") or [])) for b in split["blocks"]] == [
         ("gallery", 2), ("gallery", 2), ("text", 0), ("fill", 0), ("subtitle", 0), ("gallery", 6), ("gallery", 6), ("quote", 0)], split["blocks"]
+    # Gemini가 콜라주를 골라도 쓰지 않습니다: 2~3장은 나란히, 4장 이상은 슬라이드로 바뀝니다(발행 전 크기 조절 불가).
+    col = gemini_writer.assemble(many, json.dumps({"title": "[여행 기록] 춘천 여행 🚞", "parts": [
+        {"slot": 1, "visuals": ["V1", "V2", "V3"], "layout": "collage", "lines": []}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
+        {"slot": 3, "visuals": [f"V{i}" for i in range(4, 9)], "layout": "collage", "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
+    two = gemini_writer.assemble(many, json.dumps({"title": "[여행 기록] 춘천 여행 🚞", "parts": [
+        {"slot": 1, "visuals": ["V1", "V2"], "layout": "slide", "lines": []}, {"slot": 2, "lines": ["좋았어요", "또 갈래요"]},
+        {"slot": 3, "lines": ["필름카메라 컷"]}, {"slot": 4, "lines": ["끝", "댓글 주세요"]}]}))
+    assert two["blocks"][0]["layout"] == "strip", two["blocks"][0]   # 2~3장 슬라이드는 나란히로(사용자가 발행 때 바꾼 방식)
+    assert [(b["type"], b.get("layout")) for b in col["blocks"]] == [
+        ("gallery", "strip"), ("fill", None), ("subtitle", None), ("gallery", "slide"), ("quote", None)], col["blocks"]
     assert brief.model_copy(update={"slots": [Slot(kind="text", hint="본문"), Slot(kind="fill", hint="감상"), Slot(kind="subtitle", hint="필름카메라 컷"),
                                               Slot(kind="quote", hint="끝")]}).sections_without_fill() == []
     # 묶음 내용 점검은 Claude 모드로 합니다(gemini 모드의 prepare는 Gemini 작성을 바로 시작하므로 아래에서 가짜 agy로 확인).
@@ -290,7 +306,8 @@ async def test():
                 fb = json.loads((await write_post(draft["title"], blocks, dry_run=True, packet_id=fail_id))[1])
                 assert fb["writer"].startswith("claude") and "대체" in fb["writer"], fb["writer"]
             if case in ("잘못된자리", "권한필드"):
-                assert Path(state["raw_saved"]).read_text(encoding="utf-8").startswith("원고입니다."), state
+                saved = Path(state["raw_saved"]).read_text(encoding="utf-8")   # 첫 줄은 실패 이유, 그다음 원문
+                assert saved.startswith(f"# 실패 이유: {state['message']}\n원고입니다."), saved[:120]
             if case == "권한필드":
                 assert "Extra inputs" in state["message"] or "path" in state["message"], state["message"]
         with patch.object(config, "AGY_PATH", str(config.HOME / "no-agy")):  # agy가 없어도 failed가 기록되어 대체 작성으로 넘어감
